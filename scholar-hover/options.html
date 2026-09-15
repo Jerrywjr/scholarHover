@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="pageTitle">知阅 · 设置</title>
+    <style>
+      :root { color:#172b3a; background:#f4f7f8; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+      * { box-sizing:border-box; } body { margin:0; } main { max-width:1010px; margin:0 auto; padding:42px 24px 54px; } header { margin-bottom:26px; border-left:4px solid #0d6f78; padding-left:14px; } h1 { color:#102a43; font-size:24px; letter-spacing:.02em; margin:0 0 5px; } header p { color:#58707b; margin:0; } form { display:grid; grid-template-columns:1.1fr .9fr; gap:18px; } section { background:#fff; border:1px solid #dce7e9; border-radius:12px; box-shadow:0 4px 16px rgba(20,48,64,.06); padding:22px; } h2 { color:#12384a; font-size:16px; margin:0 0 16px; } label { display:block; color:#294958; font-weight:600; margin:14px 0 6px; } input[type="url"],input[type="text"],input[type="password"] { border:1px solid #bfd1d6; border-radius:7px; color:#162d3a; font:inherit; padding:9px 10px; width:100%; } input:focus-visible,button:focus-visible,a:focus-visible { outline:3px solid rgba(21,150,166,.35); outline-offset:2px; } .hint,output { color:#617783; display:block; font-size:12px; margin:5px 0 0; } .check { display:flex; gap:9px; align-items:flex-start; font-weight:400; margin:15px 0; } .check input { accent-color:#0d6f78; margin-top:4px; } .actions { align-items:center; display:flex; flex-wrap:wrap; gap:9px; grid-column:1 / -1; } button { background:#0d6f78; border:1px solid #0d6f78; border-radius:7px; color:#fff; cursor:pointer; font:inherit; padding:9px 13px; } button.secondary { background:#fff; color:#185262; } button.danger { border-color:#a44a40; color:#8a332b; } button:disabled { cursor:not-allowed; opacity:.55; } #status { flex:1; color:#42616b; margin:0 0 0 4px; } #status[data-state="error"] { color:#9b3b31; } .privacy { color:#506872; font-size:13px; } .privacy a { color:#0d6672; } .notice { background:#f0f8f8; border-radius:8px; color:#315661; padding:10px; } @media (max-width:720px) { main { padding:28px 16px 38px; } form { grid-template-columns:1fr; } section { padding:18px; } .actions { align-items:stretch; flex-direction:column; } #status { margin:5px 0 0; } }
+      select { border:1px solid #bfd1d6; border-radius:7px; color:#162d3a; background:#fff; font:inherit; padding:9px 10px; width:100%; } select:focus-visible { outline:3px solid rgba(21,150,166,.35); outline-offset:2px; } .languages { grid-column:1 / -1; display:grid; grid-template-columns:1fr 1fr; gap:0 18px; } .languages h2,.languages .hint { grid-column:1 / -1; } .languages label { margin-top:0; } .privacy-links { margin-top:12px; } @media (max-width:480px) { .languages { grid-template-columns:1fr; } .languages div + div { margin-top:12px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><h1 data-i18n="heading">知阅设置</h1><p data-i18n="introduction">仅在你允许后，将论文标题与原文摘要发送给你配置的模型服务。</p></header>
+      <form id="settings-form">
+        <section class="languages" aria-labelledby="languages-heading">
+          <h2 id="languages-heading" data-i18n="languagesHeading">语言</h2>
+          <div><label for="ui-language" data-i18n="uiLanguage">界面语言</label><select id="ui-language"></select></div>
+          <div><label for="output-language" data-i18n="outputLanguage">生成内容语言</label><select id="output-language"></select></div>
+          <p class="hint" data-i18n="languagesHint">两种语言可以独立选择。界面语言会立即预览；保存后应用于论文卡片。</p>
+        </section>
+        <section aria-labelledby="service-heading">
+          <h2 id="service-heading" data-i18n="serviceHeading">服务配置</h2>
+          <label for="base-url" data-i18n="baseUrl">模型 API 地址</label><input id="base-url" type="url" inputmode="url" autocomplete="url" data-i18n-placeholder="baseUrlPlaceholder" placeholder="https://api.example.com/v1" /><p class="hint" data-i18n="baseUrlHint">仅接受不含账号、参数或片段的 HTTPS 地址。更换域名会清除旧密钥，需要重新填写。</p>
+          <label for="model" data-i18n="model">模型名称</label><input id="model" type="text" autocomplete="off" data-i18n-placeholder="modelPlaceholder" placeholder="例如：your-model" />
+          <label for="api-key" data-i18n="apiKey">模型 API Key</label><input id="api-key" type="password" autocomplete="off" data-i18n-placeholder="keyPlaceholder" placeholder="留空则保留已有 Key" /><p id="key-state" class="hint"></p>
+          <label for="openalex-key" data-i18n="openAlexKey">OpenAlex Key（可选）</label><input id="openalex-key" type="password" autocomplete="off" data-i18n-placeholder="keyPlaceholder" placeholder="留空则保留已有 Key" />
+          <label class="check" for="remember-key"><input id="remember-key" type="checkbox" /><span><span data-i18n="rememberKey">在此设备记住密钥</span><br><small data-i18n="rememberKeyHint">默认仅保留在本次浏览器会话；重启浏览器后需要重新填写。本机存储不是加密保险库。</small></span></label>
+        </section>
+        <section aria-labelledby="privacy-heading">
+          <h2 id="privacy-heading" data-i18n="privacyHeading">数据与隐私</h2>
+          <p class="notice"><output id="destination">论文标题与原文摘要会发送至：尚未配置模型服务</output></p>
+          <label class="check" for="auto-generate"><input id="auto-generate" type="checkbox" /><span data-i18n="autoGenerate">匹配后自动生成译文与概述</span></label>
+          <p class="hint" data-i18n="autoGenerateHint">自动生成和连接测试会调用模型服务，可能产生费用。关闭卡片不保证撤销已经开始的计费。</p>
+          <label class="check" for="consent"><input id="consent" type="checkbox" /><span data-i18n="consent">我同意将论文标题、可用的原文摘要及翻译指令发送至上方模型服务，以生成所选语言的译文与概述。无摘要时仅发送标题与翻译指令。更换 API 地址后需要重新同意。</span></label>
+          <p class="privacy" data-i18n="metadataNotice">OpenAlex 接收论文 DOI 或标题以查找元数据；必要时向 Crossref 发送 DOI。OpenAlex Key 仅发送至 api.openalex.org；模型 Key 仅发送至你配置的模型服务。</p>
+          <p class="privacy" data-i18n="storageNotice">论文信息及生成文本只缓存在本机。清空缓存或密钥不能删除服务商已经接收的数据；各服务商的数据保留规则由其提供。</p>
+          <p class="privacy privacy-links"><span data-i18n="privacyLinksPrefix">请阅读</span> <a href="https://docs.openalex.org/" target="_blank" rel="noopener noreferrer" data-i18n="openAlexDocs">OpenAlex 文档</a>, <a href="https://api.crossref.org/" target="_blank" rel="noopener noreferrer" data-i18n="crossrefDocs">Crossref 文档</a> <span data-i18n="privacyLinksSuffix">和你所选模型服务的隐私政策。</span></p>
+          <p class="privacy"><a id="privacy-policy" href="/PRIVACY.md" target="_blank" rel="noopener noreferrer" data-i18n="privacyPolicy">插件隐私说明</a></p>
+        </section>
+        <div class="actions"><button type="submit" data-i18n="save">保存配置</button><button id="test-connection" class="secondary" type="button" data-i18n="test">测试连接</button><button id="clear-cache" class="secondary" type="button" data-i18n="clearCache">清空缓存</button><button id="clear-keys" class="secondary danger" type="button" data-i18n="clearKeys">清除密钥</button><p id="status" role="status" aria-live="polite"></p></div>
+      </form>
+    </main>
+    <script type="module" src="/src/options/index.ts"></script>
+  </body>
+</html>

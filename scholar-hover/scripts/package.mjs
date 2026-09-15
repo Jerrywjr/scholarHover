@@ -1,0 +1,12 @@
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+await mkdir('release', { recursive: true });
+const archive = path.resolve(`release/scholar-hover-${version}.zip`);
+await rm(archive, { force: true });
+execFileSync('zip', ['-q', '-r', archive, '.'], { cwd: 'dist' });
+const digest = createHash('sha256').update(await readFile(archive)).digest('hex');
+await writeFile(`${archive}.sha256`, `${digest}  ${path.basename(archive)}\n`);
+console.log(archive);

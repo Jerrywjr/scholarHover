@@ -1,0 +1,5 @@
+{
+  "extensionName": { "message": "知阅 · 文献悬停助手" },
+  "extensionDescription": { "message": "在 Google Scholar 悬停预览论文，查看有来源的摘要、译文与概述。支持中英法德四种语言和自带模型 API Key。" },
+  "actionTitle": { "message": "设置知阅文献助手" }
+}
