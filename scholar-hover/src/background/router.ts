@@ -1,4 +1,6 @@
 import type { Credentials, Generated, Paper, PaperSeed, Resolution, Response, Settings, SettingsView } from '../shared/types';
+import type { createCollectionStore } from './collection';
+import type { createExportManager } from './downloads';
 
 export interface RouterDependencies {
   extensionId: string;
@@ -17,6 +19,9 @@ export interface RouterDependencies {
   testConnection(settings: Settings, apiKey: string): Promise<void>;
   hasPermission(origin: string): Promise<boolean>;
   openSettings(): Promise<void>;
+  openCollection(): Promise<void>;
+  collection: ReturnType<typeof createCollectionStore>;
+  exports: ReturnType<typeof createExportManager>;
 }
 interface Entry { key: string; tab: number; resolution: Resolution; at: number }
 function parseSeed(input: unknown): PaperSeed {
@@ -45,6 +50,20 @@ export function createRouter(deps: RouterDependencies) {
   }
   const resolving = new Map<string, Promise<Resolution>>();
   const generating = new Map<string, Promise<Generated>>();
+  async function updateSavedCopy(paper: Paper, generated: Generated): Promise<Generated> {
+    try {
+      return await withConfiguration(async () => {
+        const currentFingerprint = await deps.fingerprint(paper, await deps.readSettings());
+        if (generated.fingerprint === currentFingerprint) await deps.collection.updateGenerated(paper, generated);
+        return generated;
+      });
+    }
+    catch (error) {
+      // A full collection must not turn a valid, already cached model response
+      // into a generation failure or make every explicit retry fail again.
+      return { ...generated, collectionWarning: error instanceof Error ? error.message.slice(0, 300) : '操作失败，请重试。' };
+    }
+  }
   async function entries(): Promise<Entry[]> {
     await writing;
     const stored = await deps.getSession('paperRegistry');
@@ -84,10 +103,13 @@ export function createRouter(deps: RouterDependencies) {
       if (!msg || typeof msg.type !== 'string' || sender.id !== deps.extensionId) throw new Error('请求来源无效。');
       const url = new URL(sender.url ?? '');
       const trusted = url.href === `chrome-extension://${deps.extensionId}/options.html`;
+      const collectionPage = url.href === `chrome-extension://${deps.extensionId}/collection.html`;
       const scholar = url.origin === 'https://scholar.google.com' && url.pathname === '/scholar' && Number.isInteger(sender.tab?.id);
-      if (!trusted && !scholar) throw new Error('此页面不支持文献助手。');
+      if (!trusted && !collectionPage && !scholar) throw new Error('此页面不支持文献助手。');
       const privileged = ['SAVE_SETTINGS', 'TEST_CONNECTION', 'CLEAR_CACHE', 'CLEAR_KEYS'];
       if (privileged.includes(msg.type) && !trusted) throw new Error('请在扩展设置页执行此操作。');
+      const collectionOnly = ['GET_COLLECTION', 'REMOVE_SAVED', 'REORDER_SAVED', 'CLEAR_COLLECTION', 'EXPORT_COLLECTION', 'GET_EXPORT', 'RETRY_DOWNLOAD'];
+      if (collectionOnly.includes(msg.type) && !collectionPage) throw new Error('请在缓存文章管理页执行此操作。');
       const tab = sender.tab?.id ?? -1;
       let data: unknown;
       switch (msg.type) {
@@ -103,6 +125,31 @@ export function createRouter(deps: RouterDependencies) {
         case 'CLEAR_KEYS': await withConfiguration(() => deps.clearKeys()); break;
         case 'CLEAR_CACHE': cacheEpoch++; await deps.clearCache(); await writing; await deps.setSession('paperRegistry', []); break;
         case 'OPEN_SETTINGS': await deps.openSettings(); break;
+        case 'OPEN_COLLECTION': await deps.openCollection(); break;
+        case 'SAVE_PAPER': {
+          if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
+          const paper = await getPaper(tab, msg.paperId);
+          data = await withConfiguration(async () => {
+            const generated = await deps.getCached(await deps.fingerprint(paper, await deps.readSettings()));
+            return deps.collection.save(paper, generated);
+          });
+          break;
+        }
+        case 'GET_COLLECTION': data = await deps.collection.list(); break;
+        case 'REMOVE_SAVED': data = await deps.collection.remove(msg.id as string, msg.revision as number); break;
+        case 'REORDER_SAVED': data = await deps.collection.reorder(msg.ids as string[], msg.revision as number); break;
+        case 'CLEAR_COLLECTION': data = await deps.collection.clear(msg.revision as number); break;
+        case 'EXPORT_COLLECTION': {
+          const snapshot = await deps.collection.list();
+          if (snapshot.revision !== msg.revision) throw new Error('缓存列表已更新，请刷新后重试。');
+          data = await deps.exports.start(snapshot, (await deps.readSettings()).uiLanguage);
+          break;
+        }
+        case 'GET_EXPORT': data = await deps.exports.get(); break;
+        case 'RETRY_DOWNLOAD': {
+          if (typeof msg.batchId !== 'string' || typeof msg.itemId !== 'string') throw new Error('下载任务已变化，请刷新后重试。');
+          data = await deps.exports.retry(msg.batchId, msg.itemId); break;
+        }
         case 'TEST_CONNECTION': { const ctx = await modelContext(); await deps.testConnection(ctx.settings, ctx.apiKey); break; }
         case 'RESOLVE': {
           if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
@@ -146,13 +193,13 @@ export function createRouter(deps: RouterDependencies) {
           const { settings, apiKey } = await modelContext();
           const fingerprint = await deps.fingerprint(paper, settings);
           const cached = await deps.getCached(fingerprint);
-          if (cached) { data = cached; break; }
+          if (cached) { data = await updateSavedCopy(paper, cached); break; }
           if (!generating.has(fingerprint)) {
             const epoch = cacheEpoch;
             const generation = (async () => {
               const result = await deps.generate(paper, settings, apiKey);
               if (epoch === cacheEpoch) await deps.putCached(result);
-              return result;
+              return updateSavedCopy(paper, result);
             })();
             generating.set(fingerprint, generation);
             void generation.finally(() => generating.delete(fingerprint)).catch(() => {});

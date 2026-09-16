@@ -27,6 +27,20 @@ function openAlexWork(overrides: Record<string, unknown> = {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('resolvePaper', () => {
+  it('keeps the primary publication PDF without silently choosing an OA manuscript', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(openAlexWork({ primary_location: { pdf_url: 'https://journal.test/paper.pdf', landing_page_url: 'https://journal.test/article', version: 'publishedVersion' }, best_oa_location: { pdf_url: 'https://preprint.test/old.pdf', version: 'submittedVersion' } }))));
+    expect((await resolvePaper(seed)).paper).toMatchObject({ downloadUrl: 'https://journal.test/paper.pdf', downloadVersion: 'publishedVersion' });
+  });
+  it('does not substitute an OA preprint when the primary PDF is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(openAlexWork({ best_oa_location: { pdf_url: 'https://preprint.test/old.pdf', version: 'submittedVersion' } }))));
+    expect((await resolvePaper(seed)).paper.downloadUrl).toBeUndefined();
+  });
+  it('rejects credential-bearing and executable full-text URLs', async () => {
+    for (const pdf_url of ['javascript:alert(1)', 'https://secret:token@journal.test/paper.pdf']) {
+      vi.stubGlobal('fetch', vi.fn(async () => response(openAlexWork({ primary_location: { pdf_url } }))));
+      expect((await resolvePaper(seed)).paper.downloadUrl).toBeUndefined();
+    }
+  });
   it('looks up a DOI directly, uses an explicit bearer key, and reconstructs an OpenAlex abstract', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toContain('/works/https://doi.org/10.5555%2Freliable.1');

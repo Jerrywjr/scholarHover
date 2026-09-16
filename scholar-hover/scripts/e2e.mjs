@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, access, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -7,13 +8,52 @@ import assert from 'node:assert/strict';
 const results = path.resolve('test-results');
 await mkdir(results, { recursive: true });
 const profile = await mkdtemp(path.join(tmpdir(), 'scholar-hover-e2e-'));
+const downloads = path.join(profile, 'downloads');
+await mkdir(downloads);
+await mkdir(path.join(profile, 'Default'));
+await writeFile(path.join(profile, 'Default', 'Preferences'), JSON.stringify({
+  download: { default_directory: downloads, prompt_for_download: false, directory_upgrade: true },
+}));
+let authorizedPdf = false;
+const fixturePdf = (() => {
+  const stream = 'BT /F1 18 Tf 50 740 Td (Offline Scholar Hover PDF fixture) Tj ET';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+  ];
+  let document = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(Buffer.byteLength(document)); document += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = Buffer.byteLength(document);
+  document += `xref\n0 ${offsets.length}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(document);
+})();
+const server = createServer((request, response) => {
+  const isPdf = request.url?.startsWith('/pdf/') && (!request.url.includes('auth') || authorizedPdf);
+  response.writeHead(200, { 'Content-Type': isPdf ? 'application/pdf' : 'text/html; charset=utf-8' });
+  response.end(isPdf ? fixturePdf : '<!doctype html><title>Offline publisher authentication fixture</title><h1>Original article / authentication fixture</h1>');
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+server.unref();
+const fixtureOrigin = `http://127.0.0.1:${server.address().port}`;
 const extension = path.resolve('dist');
 const context = await chromium.launchPersistentContext(profile, {
   channel: 'chromium', headless: true, viewport: { width: 1280, height: 900 },
+  acceptDownloads: true, downloadsPath: downloads,
   args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
 });
 const checks = [];
 const check = (name, condition) => { assert.ok(condition, name); checks.push(name); };
+const waitUntil = async (predicate, description, timeoutMs = 15000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!await predicate()) {
+    assert.ok(Date.now() < deadline, description);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+};
 try {
   let worker = context.serviceWorkers()[0];
   if (!worker) worker = await context.waitForEvent('serviceworker', { timeout: 15000 });
@@ -22,7 +62,7 @@ try {
   worker.on('close', () => {});
   // Network-only doubles: real packaged content, options, worker, matching, cache and storage execute.
   // Permission grant/denial logic is unit-tested; native permission dialogs remain a manual check.
-  await worker.evaluate(() => {
+  await worker.evaluate(fixtureOrigin => {
     globalThis.__requests = [];
     globalThis.__modelFixture = { hold: false, fail: false };
     chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://model.test/*') ?? false;
@@ -49,24 +89,42 @@ try {
       if (url.host === 'api.openalex.org') {
         const work = { id: 'https://openalex.org/W1001', title: 'Evidence and uncertainty in measurement', doi: 'https://doi.org/10.1234/evidence', type: 'article', publication_year: 2024,
           authorships: [{ author: { display_name: 'Alice Smith' } }, { author: { display_name: 'Bo Chen' } }],
-          primary_location: { source: { display_name: 'Measurement Research' }, landing_page_url: 'https://example.org/evidence' },
+          primary_location: { source: { display_name: 'Measurement Research' }, landing_page_url: `${fixtureOrigin}/source/evidence`, pdf_url: `${fixtureOrigin}/pdf/evidence.pdf`, version: 'publishedVersion' },
           abstract_inverted_index: { 'In': [0], '120': [1], 'samples,': [2], 'no': [3], 'significant': [4], 'increase': [5], 'was': [6], 'observed.': [7] } };
         if (url.searchParams.get('search') === 'Long abstract measurement study') {
           work.id = 'https://openalex.org/W1002';
           work.title = 'Long abstract measurement study';
           work.doi = 'https://doi.org/10.1234/long-abstract';
-          work.primary_location.landing_page_url = 'https://example.org/long-abstract';
+          work.primary_location.landing_page_url = `${fixtureOrigin}/source/long-abstract`;
+          work.primary_location.pdf_url = `${fixtureOrigin}/pdf/long-abstract.pdf`;
           work.abstract_inverted_index = {};
           const abstract = 'In 120 samples, no significant increase was observed; repeated measurements retained substantial uncertainty. '.repeat(55) + 'ORIGINAL_END';
           abstract.split(' ').forEach((word, index) => (work.abstract_inverted_index[word] ??= []).push(index));
+        }
+        const extras = {
+          'Paper removed from the collection': ['W1003', 'removed'],
+          'Paper without a direct PDF': ['W1004', 'missing'],
+          'Paper requiring publisher authentication': ['W1005', 'auth'],
+        };
+        const extra = extras[url.searchParams.get('search')];
+        if (extra) {
+          work.id = `https://openalex.org/${extra[0]}`;
+          work.title = url.searchParams.get('search');
+          work.doi = `https://doi.org/10.1234/${extra[1]}`;
+          work.primary_location.landing_page_url = `${fixtureOrigin}/source/${extra[1]}`;
+          work.primary_location.pdf_url = extra[1] === 'auth' ? `${fixtureOrigin}/pdf/auth.pdf` : null;
         }
         return new Response(JSON.stringify({ results: [work] }), { headers: { 'content-type': 'application/json' } });
       }
       throw new Error('Test blocked external request');
     };
-  });
+  }, fixtureOrigin);
 
   const options = await context.newPage();
+  const downloadControl = await context.newCDPSession(options);
+  // CDP's "allow" override discards Chrome extension-supplied filenames. Use
+  // normal browser naming with the above disposable-profile download preference.
+  await downloadControl.send('Browser.setDownloadBehavior', { behavior: 'default', eventsEnabled: true });
   options.on('pageerror', e => workerErrors.push(e.message));
   await options.goto(`chrome-extension://${id}/options.html`);
   await options.locator('#status').filter({ hasText: '配置已读取' }).waitFor();
@@ -150,10 +208,10 @@ try {
     await options.locator('#ui-language').selectOption(uiLanguage);
     await options.locator('#output-language').selectOption(outputLanguage);
     await options.locator('button[type="submit"]').click();
-    await options.waitForFunction(async expected => {
+    await waitUntil(() => options.evaluate(async expected => {
       const response = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
       return response.ok && response.data.uiLanguage === expected.uiLanguage && response.data.outputLanguage === expected.outputLanguage;
-    }, { uiLanguage, outputLanguage });
+    }, { uiLanguage, outputLanguage }), 'language settings must be saved');
     check(uiLanguage + ' options document language set', await options.locator('html').getAttribute('lang') === uiLanguage);
     await page.bringToFront();
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -199,7 +257,7 @@ try {
   await host.getByText('已读取本地缓存。', { exact: true }).waitFor();
   check('switching back restores the Chinese cache', await generations() === beforeChinese);
 
-  // Exercise real overflow, pointer capture and pending/error UI with a long paper.
+  // Exercise real overflow, dock resizing and pending/error UI with a long paper.
   // The model can be held until the browser has inspected the pending state.
   await page.keyboard.press('Escape');
   await setLanguages('en', 'en');
@@ -208,10 +266,10 @@ try {
     await options.locator('#auto-generate').uncheck();
     await options.locator('#model').fill(model);
     await options.locator('button[type="submit"]').click();
-    await options.waitForFunction(async expected => {
+    await waitUntil(() => options.evaluate(async expected => {
       const response = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
       return response.ok && response.data.model === expected && response.data.autoGenerate === false;
-    }, model);
+    }, model), 'manual model settings must be saved');
     await page.bringToFront();
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await page.mouse.move(0, 0);
@@ -252,11 +310,13 @@ try {
     }
     assert.fail('manual generation must reach the held model request');
   };
-  const dragHeaderTo = async (x, y) => {
-    const heading = await host.locator('.head h2').boundingBox();
-    await page.mouse.move(heading.x + 24, heading.y + 12);
+  const resizeEdgeBy = async (edge, delta) => {
+    const handle = await host.locator(`.resize-handle[data-edge="${edge}"]`).boundingBox();
+    const x = handle.x + handle.width / 2;
+    const y = handle.y + handle.height / 2;
+    await page.mouse.move(x, y);
     await page.mouse.down();
-    await page.mouse.move(x, y, { steps: 8 });
+    await page.mouse.move(x, y + delta, { steps: 8 });
     await page.mouse.up();
   };
   await configureManualModel('fixture-manual-success');
@@ -264,7 +324,7 @@ try {
     document.body.style.minHeight = '2400px';
     const result = document.createElement('div');
     result.className = 'gs_r gs_or gs_scl';
-    result.innerHTML = '<h3 class="gs_rt"><a href="https://example.org/long-abstract">Long abstract measurement study</a></h3><div class="gs_a">A Smith, B Chen - Measurement Research, 2024 - example.org</div><div class="gs_rs">A long offline abstract for scroll, drag and manual generation checks.</div>';
+    result.innerHTML = '<h3 class="gs_rt"><a href="https://example.org/long-abstract">Long abstract measurement study</a></h3><div class="gs_a">A Smith, B Chen - Measurement Research, 2024 - example.org</div><div class="gs_rs">A long offline abstract for scroll, resize and manual generation checks.</div>';
     document.querySelector('main').append(result);
   });
   const longTitle = page.getByRole('link', { name: 'Long abstract measurement study', exact: true });
@@ -272,6 +332,8 @@ try {
   await longTitle.hover();
   await host.locator('[data-action="generate"]').waitFor();
   check('manual mode does not issue a model request on hover', await generations() === beforeManual);
+  const initialDock = await cardBounds();
+  check('paper card docks to the right with fixed width and full viewport height', initialDock.x + initialDock.width === 1280 && initialDock.y === 0 && initialDock.width === 420 && initialDock.height === 900);
   await host.locator('summary').click();
   check('long original abstract creates a bounded scroll container', await body.evaluate(element => element.scrollHeight > element.clientHeight + 1000) && await withinViewport());
   const pageScrollBefore = await page.evaluate(() => scrollY);
@@ -315,30 +377,37 @@ try {
   check('scrolling keeps header, close and footer actions reachable', Math.abs(headerBeforeScroll.y - headerAfterScroll.y) < 1 && await visibleWithinCard(host.locator('[data-action="close"]')) && await visibleWithinCard(host.locator('[data-action="copy"]')));
   await page.screenshot({ path: path.join(results, 'long-abstract-bottom.png'), fullPage: false });
 
-  // Unpin first so a drag must establish its own pinned state.
+  // Resizing establishes its own pinned state and keeps the panel right docked.
   await host.locator('[data-action="pin"]').click();
   check('pin button click toggles without moving the card', await host.locator('[data-action="pin"]').getAttribute('aria-pressed') === 'false' && Math.abs((await cardBounds()).x - duringGeneratePosition.x) < 1 && Math.abs((await cardBounds()).y - duringGeneratePosition.y) < 1);
-  const headingBeforeDrag = await host.locator('.head h2').boundingBox();
-  const beforeDrag = await cardBounds();
-  await dragHeaderTo(headingBeforeDrag.x - 196, headingBeforeDrag.y - 128);
-  const afterDrag = await cardBounds();
-  check('header drag moves and pins the card', beforeDrag.x - afterDrag.x > 100 && beforeDrag.y - afterDrag.y > 80 && await host.locator('[data-action="pin"]').getAttribute('aria-pressed') === 'true');
+  await resizeEdgeBy('bottom', -180);
+  const shortened = await cardBounds();
+  check('bottom edge shortens and pins the right-docked panel', shortened.height < 780 && shortened.y === 0 && shortened.width === 420 && shortened.x + shortened.width === 1280 && await host.locator('[data-action="pin"]').getAttribute('aria-pressed') === 'true');
+  check('resize auto-pin clears an outdated unpinned status', !((await host.locator('.status').first().textContent()).includes('Card unpinned.')));
+  await resizeEdgeBy('bottom', 100);
+  check('bottom edge can lengthen the panel again', (await cardBounds()).height > shortened.height + 80 && await withinViewport());
+  const beforeTopResize = await cardBounds();
+  await resizeEdgeBy('top', 140);
+  const topResized = await cardBounds();
+  check('top edge shortens panel while preserving its bottom edge', topResized.y > 100 && Math.abs(topResized.y + topResized.height - beforeTopResize.height) < 2 && await withinViewport());
   await page.locator('.gs_rt a').nth(1).hover();
   await page.waitForTimeout(650);
-  check('dragged card remains pinned while another result is hovered', await host.getByRole('heading').textContent() === 'Long abstract measurement study');
-  await dragHeaderTo(-300, -300);
-  check('drag clamps card to the upper-left viewport edge', await withinViewport() && (await cardBounds()).x <= 16 && (await cardBounds()).y <= 16);
-  const upperBounds = await cardBounds();
-  const upperHeading = await host.locator('.head h2').boundingBox();
-  await dragHeaderTo(upperHeading.x + 24, upperHeading.y + 152);
-  const returnedBounds = await cardBounds();
-  check('card can move down again after being dragged upward', returnedBounds.y - upperBounds.y > 80 && Math.abs(returnedBounds.height - upperBounds.height) < 2 && await withinViewport());
-  await dragHeaderTo(1550, 1200);
-  check('drag clamps card to the lower-right viewport edge', await withinViewport() && await visibleWithinCard(host.locator('[data-action="close"]')));
-  await page.screenshot({ path: path.join(results, 'dragged-card.png'), fullPage: false });
+  check('resized card stays pinned while another result is hovered', await host.getByRole('heading').textContent() === 'Long abstract measurement study');
+  check('resized panel keeps close and collection actions accessible', await visibleWithinCard(host.locator('[data-action="close"]')) && await visibleWithinCard(host.locator('[data-action="collection"]')));
+  await page.screenshot({ path: path.join(results, 'resized-sidebar.png'), fullPage: false });
+  await host.locator('[data-action="reset-height"]').click();
+  check('reset height restores full viewport height on the right', (await cardBounds()).y === 0 && (await cardBounds()).height === 900 && (await cardBounds()).x + (await cardBounds()).width === 1280);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.waitForFunction(() => {
+    const bounds = document.getElementById('scholar-hover-card')?.getBoundingClientRect();
+    return bounds?.width === 320 && bounds?.height === 640;
+  });
+  check('sidebar fits a narrow resized browser viewport', await withinViewport() && (await cardBounds()).width === 320 && (await cardBounds()).height === 640);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await host.locator('[data-action="reset-height"]').click();
   await host.locator('[data-action="close"]').click();
   await host.waitFor({ state: 'hidden' });
-  check('close button closes the dragged card', !await host.isVisible());
+  check('close button closes the resized sidebar', !await host.isVisible());
 
   await configureManualModel('fixture-manual-retry');
   await worker.evaluate(() => { globalThis.__modelFixture = { hold: false, fail: true }; });
@@ -364,15 +433,136 @@ try {
   await host.locator('.status').filter({ hasText: 'English text generated.' }).waitFor();
   check('explicit retry succeeds with exactly one further request', await generations() === beforeFailure + 2 && (await host.locator('details').textContent()).includes('TRANSLATION_END'));
 
+  // Exercise the saved collection through content buttons and the real extension page.
+  // Inspect persisted storage from the worker; collection RPCs are intentionally
+  // forbidden in the options page and Scholar content script.
+  const getCollection = () => worker.evaluate(async () => (await chrome.storage.local.get('savedCollection')).savedCollection);
+  const saveCurrent = async expectedCount => {
+    await host.locator('[data-action="save"]').click();
+    await host.locator('[data-action="save"]').filter({ hasText: /Saved|cached|已缓存/i }).waitFor();
+    assert.equal((await getCollection()).items.length, expectedCount, 'Save action must persist the expected unique paper count');
+  };
+  await saveCurrent(1);
+  check('save paper stores the complete original and translated long abstracts', (await getCollection()).items[0].paper.abstract.endsWith('ORIGINAL_END') && (await getCollection()).items[0].generated.abstractTranslated.endsWith('TRANSLATION_END'));
+  await page.keyboard.press('Escape');
+  await page.mouse.move(0, 0);
+  await first.hover();
+  await host.locator('[data-action="generate"]').waitFor();
+  await host.locator('[data-action="generate"]').click();
+  await host.locator('.status').filter({ hasText: 'English text generated.' }).waitFor();
+  await saveCurrent(2);
+  await page.keyboard.press('Escape');
+  await page.mouse.move(0, 0);
+  await first.hover();
+  await host.locator('summary').waitFor();
+  await saveCurrent(2);
+  check('saving an existing paper updates it without duplicating or changing its first-save order', (await getCollection()).items.map(item => item.paper.title).join('|') === 'Long abstract measurement study|Evidence and uncertainty in measurement');
+  await page.keyboard.press('Escape');
+  const extraTitles = ['Paper removed from the collection', 'Paper without a direct PDF', 'Paper requiring publisher authentication'];
+  await page.evaluate(titles => {
+    titles.forEach((title, index) => {
+      const row = document.createElement('div');
+      row.className = 'gs_r gs_or gs_scl';
+      const heading = document.createElement('h3'); heading.className = 'gs_rt';
+      const link = document.createElement('a'); link.href = `https://example.org/extra-${index}`; link.textContent = title; heading.append(link);
+      const meta = document.createElement('div'); meta.className = 'gs_a'; meta.textContent = 'A Smith, B Chen - Measurement Research, 2024 - example.org';
+      row.append(heading, meta); document.querySelector('main').append(row);
+    });
+  }, extraTitles);
+  for (let index = 0; index < extraTitles.length; index++) {
+    await page.getByRole('link', { name: extraTitles[index], exact: true }).hover();
+    await host.locator('[data-action="generate"]').waitFor();
+    await saveCurrent(3 + index);
+    if (index < extraTitles.length - 1) await page.keyboard.press('Escape');
+  }
+  const managerPromise = context.waitForEvent('page');
+  await host.locator('[data-action="collection"]').click();
+  const manager = await managerPromise;
+  manager.on('pageerror', error => workerErrors.push(error.message));
+  await manager.waitForURL(`chrome-extension://${id}/collection.html`);
+  await manager.locator('#paper-list > li').nth(4).waitFor();
+  check('download cached papers opens the collection manager with click order preserved', (await manager.locator('.paper-title').allTextContents()).join('|') === ['Long abstract measurement study', 'Evidence and uncertainty in measurement', ...extraTitles].join('|'));
+  const removable = manager.locator('#paper-list > li').filter({ hasText: 'Paper removed from the collection' });
+  await removable.locator('[data-action="remove"]').click();
+  await removable.waitFor({ state: 'detached' });
+  check('removing a paper updates both saved collection and manager list', (await getCollection()).items.length === 4 && await manager.locator('#paper-list > li').count() === 4);
+  const evidenceRow = manager.locator('#paper-list > li').filter({ hasText: 'Evidence and uncertainty in measurement' }).first();
+  const longRow = manager.locator('#paper-list > li').filter({ hasText: 'Long abstract measurement study' }).first();
+  await evidenceRow.locator('[data-action="drag"]').dragTo(longRow, { targetPosition: { x: 100, y: 12 } });
+  await manager.waitForFunction(() => document.querySelector('#paper-list > li .paper-title')?.textContent === 'Evidence and uncertainty in measurement');
+  check('native drag reorders cached papers and renumbers the list', (await getCollection()).items[0].paper.title === 'Evidence and uncertainty in measurement' && (await manager.locator('.paper-number').allTextContents()).join(',') === '1,2,3,4');
+  await manager.reload();
+  await manager.locator('#paper-list > li').nth(3).waitFor();
+  check('collection order survives a manager page reload', (await manager.locator('.paper-title').allTextContents()).join('|') === ['Evidence and uncertainty in measurement', 'Long abstract measurement study', extraTitles[1], extraTitles[2]].join('|'));
+  await manager.locator('#preview-details').evaluate(element => { element.open = true; });
+  const preview = await manager.locator('#markdown-preview').inputValue();
+  check('Markdown preview uses APA-style references and BibTeX with current numbering', preview.indexOf('## 1. Evidence and uncertainty in measurement') < preview.indexOf('## 2. Long abstract measurement study') && preview.includes('APA-style citation') && preview.includes('@misc{paper1,') && preview.includes('@misc{paper4,'));
+  await manager.locator('#preview-details').evaluate(element => { element.open = false; });
+  const authPagePromise = context.waitForEvent('page');
+  await manager.locator('[data-action="export"]').click();
+  const authPage = await authPagePromise;
+  await authPage.waitForURL(`${fixtureOrigin}/source/missing`);
+  check('first unavailable PDF automatically opens its original publisher page', await authPage.locator('h1').textContent() === 'Original article / authentication fixture');
+  await manager.bringToFront();
+  await waitUntil(() => manager.evaluate(async () => {
+    const result = await chrome.runtime.sendMessage({ type: 'GET_EXPORT' });
+    return result.ok && result.data?.markdown.state === 'complete' && result.data.items.every(item => ['complete', 'failed'].includes(item.state));
+  }), 'native downloads must reach terminal states');
+  await manager.locator('#download-status [data-download-id="markdown"] .download-state[data-state="complete"]').waitFor();
+  const batch = await manager.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'GET_EXPORT' })).data);
+  check('export reports successful Markdown and PDF files alongside each failure', batch.markdown.state === 'complete' && batch.items.map(item => item.state).join(',') === 'complete,complete,failed,failed');
+  const nativeDownloads = await worker.evaluate(async () => chrome.downloads.search({}));
+  await writeFile(path.join(results, 'native-downloads-initial.json'), JSON.stringify(nativeDownloads, null, 2));
+  const markdownDownload = nativeDownloads.find(item => item.id === batch.markdown.downloadId);
+  const pdfDownloads = batch.items.slice(0, 2).map(item => nativeDownloads.find(download => download.id === item.downloadId));
+  check('real Chrome downloads remain inside the isolated temporary directory', [markdownDownload, ...pdfDownloads].every(item => item.filename.startsWith(downloads + path.sep)));
+  const markdown = await readFile(markdownDownload.filename, 'utf8');
+  await writeFile(path.join(results, 'exported-articles.md'), markdown);
+  check('downloaded Markdown equals the reviewed preview including original and translated abstracts', markdown === preview && markdown.includes('ORIGINAL\\_END') && markdown.includes('TRANSLATION\\_END') && !markdown.includes(extraTitles[0]));
+  check('real PDF filenames have the same numbers and paper titles as Markdown', path.basename(pdfDownloads[0].filename) === '1-Evidence and uncertainty in measurement.pdf' && path.basename(pdfDownloads[1].filename) === '2-Long abstract measurement study.pdf' && pdfDownloads.every(item => item.mime === 'application/pdf'));
+  check('downloaded files contain PDF bytes rather than an authentication page', (await Promise.all(pdfDownloads.map(item => readFile(item.filename)))).every(bytes => bytes.equals(fixturePdf)));
+  const htmlItem = batch.items[3];
+  const htmlDownload = nativeDownloads.find(item => item.id === htmlItem.downloadId);
+  const htmlExists = await access(htmlDownload.filename).then(() => true, () => false);
+  check('HTML returned by a PDF URL is marked failed and its invalid downloaded file is removed', htmlItem.state === 'failed' && !htmlExists && /PDF/.test(htmlItem.error));
+  check('missing and authentication failures expose source links and explicit retries', await manager.locator('#download-status .download-state[data-state="failed"]').count() === 2 && await manager.locator('#download-status [data-action="retry"]').count() === 2 && await manager.locator('#download-status .download-actions a').count() >= 2);
+  await manager.screenshot({ path: path.join(results, 'collection-downloads.png'), fullPage: true });
+  authorizedPdf = true;
+  await manager.locator(`#download-status [data-download-id="${htmlItem.id}"] [data-action="retry"]`).click();
+  await manager.locator(`#download-status [data-download-id="${htmlItem.id}"] .download-state[data-state="complete"]`).waitFor();
+  const retried = await manager.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'GET_EXPORT' })).data);
+  const retriedTransfer = (await worker.evaluate(async id => chrome.downloads.search({ id }), retried.items[3].downloadId))[0];
+  check('explicit retry downloads the PDF using its original export number', retried.items[3].number === 4 && retriedTransfer.state === 'complete' && path.basename(retriedTransfer.filename) === '4-Paper requiring publisher authentication.pdf' && (await readFile(retriedTransfer.filename)).equals(fixturePdf));
+  const downloadEvidence = {
+    initialBatch: batch, afterRetry: retried,
+    nativeTransferCount: (await worker.evaluate(async () => chrome.downloads.search({}))).length,
+    files: [markdownDownload, ...pdfDownloads, retriedTransfer].map(item => ({ filename: path.basename(item.filename), state: item.state, mime: item.mime, bytes: item.fileSize })),
+    invalidHtmlFileRemoved: !htmlExists,
+    isolation: 'Chrome profile and native downloads were confined to a disposable test directory. Only generated Markdown, one artificial one-page PDF and this metadata report are retained.',
+  };
+  await writeFile(path.join(results, 'exported-sample.pdf'), await readFile(pdfDownloads[0].filename));
+  await writeFile(path.join(results, 'native-downloads.json'), JSON.stringify(downloadEvidence, null, 2));
+  await manager.screenshot({ path: path.join(results, 'collection-retry-complete.png'), fullPage: true });
+
   check('no unhandled page errors', workerErrors.length === 0);
   const requestLog = await worker.evaluate(() => globalThis.__requests);
   check('no secret in page DOM', !await page.evaluate(() => document.documentElement.outerHTML.includes('TEST_ONLY_SECRET_NOT_REAL')));
   check('requests limited to configured providers', requestLog.every(r => ['api.openalex.org', 'model.test'].includes(r.host)));
   const timings = await worker.evaluate(async () => { const data = await chrome.storage.session.get(['lastModelTiming', 'paperRegistry']); return { model: data.lastModelTiming, metadata: data.paperRegistry?.map(e => e.resolution.timings).filter(Boolean) }; });
   check('provider round-trip diagnostics recorded locally', typeof timings.model?.durationMs === 'number' && timings.metadata.some(t => typeof t.openalex === 'number'));
-  await writeFile(path.join(results, 'e2e.json'), JSON.stringify({ passed: checks, count: checks.length, timestamp: new Date().toISOString(), scope: 'Packaged MV3 extension with network and permission-boundary doubles; no real Scholar or paid model calls.', cachedFirstFrame: { count: sorted.length, p95Ms: p95, samplesMs: latencies }, timings, errors: workerErrors }, null, 2));
-  console.log(JSON.stringify({ checks: checks.length, p95Ms: p95, screenshots: ['test-results/options.png', 'test-results/hover-card.png', 'test-results/options-fr.png', 'test-results/options-de.png', 'test-results/hover-card-fr-de.png', 'test-results/manual-generation-pending.png', 'test-results/long-abstract-bottom.png', 'test-results/dragged-card.png', 'test-results/manual-generation-failed.png'] }));
+  await writeFile(path.join(results, 'e2e.json'), JSON.stringify({ passed: checks, count: checks.length, timestamp: new Date().toISOString(), scope: 'Packaged MV3 extension with metadata/model and permission-boundary doubles; actual Chrome downloads from a loopback PDF/auth fixture into an isolated temporary directory. No real Scholar or paid model calls.', cachedFirstFrame: { count: sorted.length, p95Ms: p95, samplesMs: latencies }, timings, errors: workerErrors }, null, 2));
+  console.log(JSON.stringify({ checks: checks.length, p95Ms: p95, screenshots: ['test-results/options.png', 'test-results/hover-card.png', 'test-results/options-fr.png', 'test-results/options-de.png', 'test-results/hover-card-fr-de.png', 'test-results/manual-generation-pending.png', 'test-results/long-abstract-bottom.png', 'test-results/resized-sidebar.png', 'test-results/manual-generation-failed.png', 'test-results/collection-downloads.png', 'test-results/collection-retry-complete.png'] }));
 } catch (error) {
+  const collectionPage = context.pages().find(page => page.url().endsWith('/collection.html'));
+  if (collectionPage) {
+    await collectionPage.screenshot({ path: path.join(results, 'collection-failure.png'), fullPage: true }).catch(() => {});
+    const collectionState = await collectionPage.evaluate(async () => ({
+      text: document.body.innerText,
+      collection: await chrome.runtime.sendMessage({ type: 'GET_COLLECTION' }),
+      export: await chrome.runtime.sendMessage({ type: 'GET_EXPORT' }),
+    })).catch(() => undefined);
+    await writeFile(path.join(results, 'collection-failure.json'), JSON.stringify({ completedChecks: checks, message: String(error), collectionState }, null, 2));
+  }
   const scholarPage = context.pages().find(page => page.url().startsWith('https://scholar.google.com/'));
   if (scholarPage) {
     await scholarPage.screenshot({ path: path.join(results, 'e2e-failure.png'), fullPage: true }).catch(() => {});
@@ -388,5 +578,6 @@ try {
   throw error;
 } finally {
   await context.close();
+  await new Promise(resolve => server.close(resolve));
   await rm(profile, { recursive: true, force: true });
 }

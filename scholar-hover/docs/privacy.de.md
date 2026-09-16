@@ -1,10 +1,10 @@
 # Scholar Hover · Datenschutzhinweise
 
-Version 0.2.0 · 2026-09-15
+Version 0.3.0 · 2026-09-16
 
 [简体中文](privacy.md) · [English](privacy.en.md) · [Français](privacy.fr.md)
 
-Diese Erweiterung ergänzt ausschließlich Suchergebnisseiten, die Nutzer unter https://scholar.google.com/scholar öffnen. Sie liest Titel, Autoren, Jahr, Publikationsort und Links des ausgelösten Suchergebnisses, um die Publikation zu identifizieren. Sie automatisiert weder Suchanfragen noch das Blättern oder den Abruf von Volltexten. Es gibt kein Produktkonto und keinen vom Projekt betriebenen Server.
+Diese Erweiterung ergänzt ausschließlich Suchergebnisseiten, die Nutzer unter https://scholar.google.com/scholar öffnen. Sie liest Titel, Autoren, Jahr, Publikationsort und Links des ausgelösten Suchergebnisses, um die Publikation zu identifizieren. Sie automatisiert weder Suchanfragen noch das Blättern; Volltextdownloads werden vom Nutzer ausdrücklich in der Sammlungsverwaltung gestartet. Es gibt kein Produktkonto und keinen vom Projekt betriebenen Server.
 
 ## Empfänger der Daten
 
@@ -28,3 +28,11 @@ Die Erweiterung läuft ausschließlich auf Scholar-Suchseiten für Publikationen
 Diese Version enthält keine Werbung, keine automatische Telemetrie und keine Hintergrundübertragung von Nutzungsaufzeichnungen. Testdiagnosen werden lokal gespeichert; prüfen Sie deren Inhalt vor einer Weitergabe. Modellausgaben können fehlerhaft sein. Abstractübersetzungen und Zusammenfassungen kennzeichnen ihre Quellengrundlage und ersetzen weder Schlussfolgerungen aus dem vollständigen Text noch eine Qualitätsbewertung der Publikation. Tests auf echten Seiten und menschliche Prüfungen, einschließlich der Prüfung durch Muttersprachler aller vier Sprachen, sind noch nicht abgeschlossen.
 
 Dieses Testpaket wurde noch nicht öffentlich veröffentlicht. Die Veröffentlichung in einem öffentlichen GitHub-Repository wartet auf die ausdrückliche Bestätigung des Nutzers nach seinem Test. Vor einer offiziellen Veröffentlichung im Store muss der Herausgeber dort einen erreichbaren Kontaktkanal und eine öffentliche Adresse dieser Datenschutzhinweise angeben.
+
+## Bewusstes Speichern und Exportieren (0.3.0)
+
+Artikel speichern legt Metadaten, Quellenlinks und vorhandene Übersetzungen in einer separaten lokalen Sammlung ab: höchstens 200 Artikel und 4 MiB, ohne automatischen Ablauf. Die Einträge bleiben bis zum Löschen, Leeren der Sammlung oder Deinstallieren der Erweiterung erhalten. Die siebentägige Frist und das Leeren des Generierungscaches betreffen diese Sammlung nicht. Spätere erfolgreiche Generierungen aktualisieren gespeicherte Artikel nur bei weiterhin übereinstimmendem Quellinhalt.
+
+Der Export von Markdown und Originalen verwendet die Berechtigung downloads, um eine Markdown-Datei zu erstellen und bekannte Volltext-PDFs herunterzuladen. Die Anfragen gehen an den Volltextanbieter; Chrome sendet vorhandene Cookies dieser Website mit. Modell- und OpenAlex-Schlüssel werden nicht dorthin gesendet. Volltexte werden nicht an ein Modell übermittelt. Fehler werden angezeigt; die Originalseite des ersten Fehlers pro Export öffnet sich automatisch, weitere Seiten sind verlinkt. Anmeldung, institutionelle Authentifizierung und CAPTCHA erfolgen durch den Nutzer.
+
+Dateinamen, Quellenlinks und Downloadstatus des letzten Exports werden zur Prüfung und Wiederholung lokal gespeichert. Antworten ohne PDF werden nicht als erfolgreich angezeigt; die Erweiterung versucht ausschließlich die dabei neu erzeugte ungültige Datei zu entfernen. Regulär exportierte Dateien bleiben im Downloadordner erhalten, auch wenn Sammlung, Cache oder Erweiterung entfernt werden. Es kommen keine Hintergrunduploads oder Telemetrie hinzu.

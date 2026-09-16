@@ -3,12 +3,11 @@ import { rpc } from '../shared/rpc.ts';
 import { localizeError } from '../shared/errors.ts';
 import { LANGUAGES, type Language } from '../shared/languages.ts';
 import { contentText, type ContentMessageKey } from './messages.ts';
-import type { Generated, Paper, PaperSeed, Resolution, SettingsView } from '../shared/types.ts';
+import type { Generated, Paper, PaperSeed, Resolution, SavedPaper, SettingsView } from '../shared/types.ts';
 
 const RESULT_SELECTOR = '.gs_r.gs_or.gs_scl';
 const TITLE_SELECTOR = '.gs_rt';
 const CARD_ID = 'scholar-hover-card';
-const CLOSE_DELAY = 120;
 
 type Active = {
   element: Element;
@@ -23,12 +22,17 @@ type Active = {
   notice?: { key: ContentMessageKey; failure: boolean; detail?: string };
   generationPending?: string;
   outputPending?: string;
+  savePending?: string;
+  savedPaperId?: string;
+  saveNotice?: { key: ContentMessageKey; failure: boolean; detail?: string };
+  collectionPending?: boolean;
 };
 
 type CardFocus =
   | { kind: 'button'; action: string; candidateId?: string }
   | { kind: 'summary' }
   | { kind: 'body' }
+  | { kind: 'edge'; edge: string }
   | { kind: 'link'; href: string; className: string };
 
 function cleanTitle(value: string): string {
@@ -101,57 +105,19 @@ function createHost(): HTMLElement {
   const host = document.createElement('aside');
   host.id = CARD_ID;
   host.setAttribute('aria-live', 'polite');
-  host.style.cssText = 'position:fixed;z-index:2147483647;display:none;overflow:hidden;width:min(420px,calc(100vw - 24px));';
+  host.style.cssText = 'position:fixed;z-index:2147483647;display:none;overflow:hidden;right:0;top:0;width:min(420px,100vw);height:100vh;';
   host.attachShadow({ mode: 'open' });
   document.body.append(host);
   return host;
-}
-
-export function cardPlacement(rect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>, viewport: { width: number; height: number }): { left: number; top: number; maxHeight: number; side: 'right' | 'below' | 'above' } {
-  const width = Math.min(420, Math.max(0, viewport.width - 24));
-  const rightLeft = rect.right + 12;
-  const alignedTop = Math.max(12, Math.min(rect.top, viewport.height - Math.min(320, viewport.height - 24) - 12));
-  if (width >= 260 && rightLeft + width <= viewport.width - 12) {
-    return { left: rightLeft, top: alignedTop, maxHeight: Math.max(80, viewport.height - alignedTop - 12), side: 'right' };
-  }
-  const left = Math.max(12, Math.min(viewport.width - width - 12, rect.left));
-  const belowTop = Math.max(12, rect.bottom + 8);
-  const below = viewport.height - belowTop - 12;
-  const above = rect.top - 12;
-  const placeAbove = below < 220 && above > below;
-  return { left, top: placeAbove ? 12 : belowTop, maxHeight: Math.max(80, placeAbove ? above : below), side: placeAbove ? 'above' : 'below' };
-}
-
-function position(host: HTMLElement, target: Element): void {
-  const placement = cardPlacement(target.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-  host.style.left = `${placement.left}px`;
-  host.style.top = `${placement.top}px`;
-  host.style.maxHeight = `${placement.maxHeight}px`;
-  host.style.setProperty('--card-max-height', `${placement.maxHeight}px`);
-}
-
-function moveWithinViewport(host: HTMLElement, left: number, top: number): void {
-  const rect = host.getBoundingClientRect();
-  const width = rect.width || Math.min(420, window.innerWidth - 24);
-  const height = Math.min(rect.height, Math.max(0, window.innerHeight - 24));
-  const x = Math.max(12, Math.min(left, window.innerWidth - width - 12));
-  const y = Math.max(12, Math.min(top, window.innerHeight - height - 12));
-  // Keep the existing height limit while moving upward, so a long card does not
-  // grow to fill the screen and become impossible to drag back down.
-  const previousMaxHeight = Number.parseFloat(host.style.maxHeight) || window.innerHeight - 24;
-  const maxHeight = Math.min(previousMaxHeight, Math.max(0, window.innerHeight - y - 12));
-  host.style.left = `${x}px`; host.style.top = `${y}px`;
-  host.style.maxHeight = `${maxHeight}px`;
-  host.style.setProperty('--card-max-height', `${maxHeight}px`);
 }
 
 function addStyle(root: ShadowRoot): void {
   const style = document.createElement('style');
   style.textContent = `
     :host { color:#172b3a; font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
-    * { box-sizing:border-box; } .card { display:flex; flex-direction:column; background:#fff; border:1px solid #d9e5e8; border-radius:12px; box-shadow:0 10px 30px rgba(22,48,65,.18); max-height:var(--card-max-height,calc(100vh - 24px)); overflow:hidden; }
-    .head { display:flex; flex-shrink:0; gap:10px; align-items:flex-start; padding:14px 14px 11px; border-top:3px solid #0d6f78; cursor:grab; touch-action:none; user-select:none; } :host([data-dragging]) .head { cursor:grabbing; } .title-group { flex:1; min-width:0; } .drag-hint { display:block; color:#627d86; font-size:10px; margin-top:5px; } h2 { margin:0; min-width:0; max-height:6em; overflow:auto; overflow-wrap:anywhere; color:#102a43; font-size:15px; line-height:1.4; font-weight:650; } button { border:1px solid #c5d6da; border-radius:7px; background:#fff; color:#174e5a; cursor:pointer; font:inherit; padding:5px 8px; } button:hover { background:#eff7f7; } button:disabled { cursor:wait; opacity:.7; } button:focus-visible,a:focus-visible,.body:focus-visible { outline:2px solid #1596a6; outline-offset:-2px; }
-    .actions { display:flex; flex-shrink:0; gap:5px; } .body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; overflow-wrap:anywhere; padding:0 14px 14px; } .meta { color:#516773; margin:0 0 9px; } .translated { color:#0d5863; margin:0 0 10px; font-size:14px; font-weight:600; } .section { border-top:1px solid #e5edef; padding-top:10px; margin-top:10px; } .label { display:block; color:#42616b; font-size:11px; font-weight:650; letter-spacing:.02em; margin-bottom:3px; } .status { color:#42616b; margin:0 0 9px; overflow-wrap:anywhere; } .warning { color:#805b16; background:#fff8e8; border-radius:6px; padding:7px 8px; margin:8px 0; } .sources { color:#617883; font-size:11px; margin:10px 0 0; } .source-link { color:#0d6672; } details { margin-top:8px; } summary { color:#235764; cursor:pointer; } .candidate { display:block; width:100%; text-align:left; margin:6px 0; padding:8px; } .candidate small { display:block; color:#59707b; margin-top:2px; } .footer { flex-shrink:0; padding:10px 14px 12px; border-top:1px solid #e5edef; background:#f8fbfc; } .footer-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; } .original { color:#0d6672; text-decoration:none; } .failure { color:#a33b30; } @media (max-width:480px) { .head { padding:12px; } .body { padding:0 12px 12px; } }
+    * { box-sizing:border-box; } .card { display:flex; flex-direction:column; background:#fff; border:1px solid #d9e5e8; height:100%; box-shadow:-6px 0 28px rgba(22,48,65,.18); overflow:hidden; }
+    .head { flex-shrink:0; padding:16px 14px 11px; border-top:3px solid #0d6f78; } .title-group { min-width:0; } .resize-hint { display:block; color:#627d86; font-size:10px; margin-top:5px; } h2 { margin:0; min-width:0; max-height:4.2em; overflow:auto; overflow-wrap:anywhere; color:#102a43; font-size:15px; line-height:1.4; font-weight:650; } button { border:1px solid #c5d6da; border-radius:7px; background:#fff; color:#174e5a; cursor:pointer; font:inherit; padding:5px 8px; } button:hover { background:#eff7f7; } button:disabled { cursor:wait; opacity:.7; } button:focus-visible,a:focus-visible,.body:focus-visible,.resize-handle:focus-visible { outline:2px solid #1596a6; outline-offset:-2px; }
+    .actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; } .body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; overflow-wrap:anywhere; padding:0 14px 14px; } .meta { color:#516773; margin:0 0 9px; } .translated { color:#0d5863; margin:0 0 10px; font-size:14px; font-weight:600; } .section { border-top:1px solid #e5edef; padding-top:10px; margin-top:10px; } .label { display:block; color:#42616b; font-size:11px; font-weight:650; letter-spacing:.02em; margin-bottom:3px; } .status { color:#42616b; margin:0 0 9px; overflow-wrap:anywhere; max-height:4.7em; overflow-y:auto; } .warning { color:#805b16; background:#fff8e8; border-radius:6px; padding:7px 8px; margin:8px 0; } .sources { color:#617883; font-size:11px; margin:10px 0 0; } .source-link { color:#0d6672; } details { margin-top:8px; } summary { color:#235764; cursor:pointer; } .candidate { display:block; width:100%; text-align:left; margin:6px 0; padding:8px; } .candidate small { display:block; color:#59707b; margin-top:2px; } .footer { flex-shrink:0; max-height:55%; overflow-y:auto; overscroll-behavior:contain; padding:10px 14px 16px; border-top:1px solid #e5edef; background:#f8fbfc; } .footer-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; } .original { color:#0d6672; text-decoration:none; } .failure { color:#a33b30; } .collection-actions { display:flex; gap:7px; flex-wrap:wrap; margin-top:9px; } [data-action="save"] { background:#0d6f78; border-color:#0d6f78; color:white; } .save-status { font-size:12px; margin-top:8px; } .resize-handle { position:absolute; z-index:2; height:8px; left:0; right:0; cursor:ns-resize; touch-action:none; } .resize-handle[data-edge="top"] { top:0; } .resize-handle[data-edge="bottom"] { bottom:0; } .resize-handle::after { content:""; position:absolute; width:48px; height:3px; border-radius:2px; background:#8fb1b7; left:calc(50% - 24px); top:2px; } .resize-handle:hover,.resize-handle:focus-visible,:host([data-resizing]) .resize-handle { background:#cce5e8; } @media (max-width:480px) { .head { padding:12px; } .body { padding:0 12px 12px; } }
   `;
   root.append(style);
 }
@@ -201,9 +167,9 @@ export function startContentScript(): () => void {
   let active: Active | undefined;
   let token = 0;
   let hoverTimer: number | undefined;
-  let closeTimer: number | undefined;
   let suppressFocusTarget: Element | undefined;
-  let drag: { pointerId: number; x: number; y: number; left: number; top: number; moved: boolean } | undefined;
+  let resizing: { pointerId: number; edge: 'top' | 'bottom'; y: number; top: number; height: number } | undefined;
+  let panel = { top: 0, height: window.innerHeight, fullHeight: true };
   const failedGenerationAttempts = new Set<string>();
   let preferences: SettingsView = { uiLanguage: 'zh-CN', outputLanguage: 'zh-CN', baseUrl: '', model: '', autoGenerate: false, consent: false, rememberKey: false, hasApiKey: false, hasOpenAlexKey: false };
   let configRevision = 0;
@@ -213,19 +179,49 @@ export function startContentScript(): () => void {
   const label = (key: ContentMessageKey) => contentText(key, preferences.uiLanguage, preferences.outputLanguage);
 
   const current = (expected: number) => active?.token === expected && host.isConnected;
-  const finishDrag = () => {
-    if (drag) { try { host.releasePointerCapture?.(drag.pointerId); } catch { /* Pointer already released. */ } }
-    drag = undefined;
-    delete host.dataset.dragging;
+  const minimumHeight = () => Math.min(window.innerHeight, Math.max(360,
+    (root.querySelector('.head')?.getBoundingClientRect().height ?? 0)
+    + (root.querySelector('.footer')?.getBoundingClientRect().height ?? 0) + 96));
+  const positionPanel = () => {
+    const viewportHeight = Math.max(0, window.innerHeight);
+    if (panel.fullHeight) panel = { top: 0, height: viewportHeight, fullHeight: true };
+    else {
+      panel.height = Math.min(viewportHeight, Math.max(minimumHeight(), panel.height));
+      panel.top = Math.max(0, Math.min(panel.top, viewportHeight - panel.height));
+    }
+    host.style.right = '0px'; host.style.left = 'auto';
+    host.style.width = `${Math.min(420, Math.max(0, window.innerWidth))}px`;
+    host.style.top = `${panel.top}px`; host.style.height = `${panel.height}px`;
+    for (const edge of root.querySelectorAll<HTMLElement>('.resize-handle')) {
+      edge.setAttribute('aria-valuemin', String(Math.round(minimumHeight())));
+      edge.setAttribute('aria-valuemax', String(Math.round(viewportHeight)));
+      edge.setAttribute('aria-valuenow', String(Math.round(panel.height)));
+    }
+  };
+  const pinPanel = () => {
+    if (!active) return;
+    active.pinned = true;
+    if (hoverTimer) window.clearTimeout(hoverTimer);
+    const pin = root.querySelector<HTMLButtonElement>('[data-action="pin"]');
+    if (pin) { pin.textContent = label('unpin'); pin.setAttribute('aria-pressed', 'true'); }
+    if (active.notice?.key === 'unpinned') {
+      active.notice = { key: 'pinned', failure: false };
+      const status = root.querySelector<HTMLElement>('.status');
+      if (status && !active.generationPending) status.textContent = label('pinned');
+    }
+  };
+  const finishResize = () => {
+    if (resizing) { try { host.releasePointerCapture?.(resizing.pointerId); } catch { /* Pointer already released. */ } }
+    resizing = undefined;
+    delete host.dataset.resizing;
   };
   const close = (restoreFocus = false) => {
     const prior = active;
     active = undefined;
-    finishDrag();
+    finishResize();
     token += 1;
     if (hoverTimer) window.clearTimeout(hoverTimer);
-    if (closeTimer) window.clearTimeout(closeTimer);
-    hoverTimer = closeTimer = undefined;
+    hoverTimer = undefined;
     host.style.display = 'none';
     root.replaceChildren();
     if (restoreFocus && prior?.keyboard) {
@@ -245,6 +241,8 @@ export function startContentScript(): () => void {
       ? { kind: 'button', action: activeElement.dataset.action, candidateId: activeElement.dataset.candidateId }
       : activeElement instanceof HTMLElement && activeElement.tagName === 'SUMMARY'
         ? { kind: 'summary' }
+        : activeElement instanceof HTMLElement && activeElement.dataset.edge
+          ? { kind: 'edge', edge: activeElement.dataset.edge }
         : activeElement instanceof HTMLElement && activeElement.classList.contains('body')
           ? { kind: 'body' }
         : activeElement instanceof HTMLAnchorElement
@@ -257,14 +255,13 @@ export function startContentScript(): () => void {
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-modal', 'false');
     card.setAttribute('aria-labelledby', 'scholar-hover-heading');
-    card.setAttribute('aria-busy', String(!!active.generationPending));
+    card.setAttribute('aria-busy', String(!!active.generationPending || !!active.savePending));
     const head = document.createElement('div'); head.className = 'head';
-    head.title = label('dragHint');
     const heading = document.createElement('h2'); heading.id = 'scholar-hover-heading'; heading.textContent = active.paper?.title || active.seed.title;
     const titleGroup = document.createElement('div'); titleGroup.className = 'title-group';
-    titleGroup.append(heading); text(titleGroup, label('dragHint'), 'drag-hint'); head.append(titleGroup);
+    titleGroup.append(heading); text(titleGroup, label('resizeHint'), 'resize-hint'); head.append(titleGroup);
     const actions = document.createElement('div'); actions.className = 'actions';
-    actions.append(cardButton(label(active.pinned ? 'unpin' : 'pin'), 'pin', active.pinned), cardButton(label('close'), 'close'));
+    actions.append(cardButton(label(active.pinned ? 'unpin' : 'pin'), 'pin', active.pinned), cardButton(label('fullHeight'), 'reset-height'), cardButton(label('close'), 'close'));
     head.append(actions); card.append(head);
     const body = document.createElement('div'); body.className = 'body'; body.tabIndex = 0;
     body.setAttribute('aria-label', label('contents'));
@@ -308,7 +305,29 @@ export function startContentScript(): () => void {
       generate.disabled = generating; footerActions.append(generate);
     }
     footerActions.append(cardButton(label('settings'), 'settings'));
-    footer.append(footerActions); card.append(body, footer); root.append(card);
+    footer.append(footerActions);
+    const collectionActions = document.createElement('div'); collectionActions.className = 'collection-actions';
+    const saving = !!active.paper && active.savePending === active.paper.id;
+    const saved = !!active.paper && active.savedPaperId === active.paper.id;
+    const save = cardButton(label(saving ? 'saving' : saved ? 'savedButton' : 'save'), 'save');
+    save.disabled = !active.paper || saving;
+    const collection = cardButton(label(active.collectionPending ? 'collectionOpening' : 'collection'), 'collection');
+    collection.disabled = !!active.collectionPending;
+    collectionActions.append(save, collection); footer.append(collectionActions);
+    if (active.saveNotice) {
+      const saveStatus = document.createElement('p'); saveStatus.className = `status save-status${active.saveNotice.failure ? ' failure' : ''}`;
+      saveStatus.setAttribute('role', 'status');
+      saveStatus.textContent = active.saveNotice.detail ? localizeError(active.saveNotice.detail, preferences.uiLanguage) : label(active.saveNotice.key);
+      footer.append(saveStatus);
+    }
+    card.append(body, footer); root.append(card);
+    for (const edge of ['top', 'bottom'] as const) {
+      const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.dataset.edge = edge; handle.tabIndex = 0;
+      handle.setAttribute('role', 'separator'); handle.setAttribute('aria-orientation', 'horizontal');
+      handle.setAttribute('aria-label', label(edge === 'top' ? 'resizeTop' : 'resizeBottom'));
+      root.append(handle);
+    }
+    positionPanel();
     host.dataset.paperId = active.paper?.id ?? '';
     const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button[data-action]'));
     const details = root.querySelector<HTMLDetailsElement>('details');
@@ -320,6 +339,7 @@ export function startContentScript(): () => void {
           ?? (focused.action === 'confirm' ? buttons.find(button => button.dataset.action === 'confirm') : undefined)
         : focused.kind === 'summary'
           ? root.querySelector<HTMLElement>('details > summary')
+          : focused.kind === 'edge' ? root.querySelector<HTMLElement>(`.resize-handle[data-edge="${focused.edge}"]`)
           : focused.kind === 'body' ? body
           : Array.from(root.querySelectorAll<HTMLAnchorElement>('a')).find(link => link.href === focused.href && link.className === focused.className);
       (restored ?? buttons.find(button => button.dataset.action === 'close'))?.focus();
@@ -343,6 +363,7 @@ export function startContentScript(): () => void {
       if (generated.language !== preferences.outputLanguage) { render('outputChanged', true); settingsReady = refreshSettings(); return; }
       failedGenerationAttempts.delete(attempt);
       active.generated = generated;
+      if (generated.collectionWarning) active.saveNotice = { key: 'saveFailed', failure: true, detail: generated.collectionWarning };
       render('generated');
     } catch (error) {
       if (!generationCurrent(expected, paper, revision)) return;
@@ -415,7 +436,7 @@ export function startContentScript(): () => void {
     if (hoverTimer) window.clearTimeout(hoverTimer);
     const expected = ++token;
     active = { element, seed, token: expected, pinned: false, keyboard, focusPending: keyboard };
-    host.style.display = 'block'; position(host, element); render();
+    host.style.display = 'block'; positionPanel(); render();
     void enrich(expected, seed);
   };
   const scheduleOpen = (element: Element, keyboard = false) => {
@@ -423,28 +444,49 @@ export function startContentScript(): () => void {
     if (hoverTimer) window.clearTimeout(hoverTimer);
     hoverTimer = window.setTimeout(() => open(element, keyboard), HOVER_DELAY);
   };
-  const scheduleClose = (related: EventTarget | null) => {
-    if (drag || active?.pinned || (related instanceof Node && (active?.element.contains(related) || host.contains(related)))) return;
-    if (closeTimer) window.clearTimeout(closeTimer);
-    closeTimer = window.setTimeout(() => close(), CLOSE_DELAY);
-  };
-
-  const onOver = (event: MouseEvent) => { const element = resultFor(event.target); if (element) { if (closeTimer) window.clearTimeout(closeTimer); scheduleOpen(element); } };
-  const onOut = (event: MouseEvent) => { if (resultFor(event.target)) { if (hoverTimer) window.clearTimeout(hoverTimer); hoverTimer = undefined; scheduleClose(event.relatedTarget); } };
+  const onOver = (event: MouseEvent) => { const element = resultFor(event.target); if (element) scheduleOpen(element); };
+  // A right-docked panel must remain reachable across the space between the
+  // result title and the page edge. Leaving a title only cancels unopened previews.
+  const onOut = (event: MouseEvent) => { if (resultFor(event.target)) { if (hoverTimer) window.clearTimeout(hoverTimer); hoverTimer = undefined; } };
   const onFocus = (event: FocusEvent) => { const element = resultFor(event.target); if (element) { if (element === suppressFocusTarget) { suppressFocusTarget = undefined; return; } scheduleOpen(element, true); } };
   const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && active) { event.preventDefault(); close(true); } };
   const onPointerDown = (event: PointerEvent) => { if (active && !active.pinned && !event.composedPath().includes(host) && !active.element.contains(event.target as Node)) close(); };
-  const onHostOver = () => { if (closeTimer) window.clearTimeout(closeTimer); };
-  const onHostOut = (event: MouseEvent) => { if (!(event.relatedTarget instanceof Node && host.contains(event.relatedTarget))) scheduleClose(event.relatedTarget); };
   const onCardClick = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]'); if (!button || !active) return;
     const expected = active.token;
     if (button.dataset.action === 'close') { close(true); return; }
     if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); return; }
+    if (button.disabled) return;
+    if (button.dataset.action === 'reset-height') { panel.fullHeight = true; positionPanel(); return; }
+    if (button.dataset.action === 'save' && active.paper) {
+      const paper = active.paper;
+      if (active.savePending === paper.id) return;
+      pinPanel();
+      active.savePending = paper.id; active.saveNotice = { key: 'saving', failure: false }; render();
+      void rpc<SavedPaper>({ type: 'SAVE_PAPER', paperId: paper.id }).then(() => {
+        if (!current(expected) || !active || active.paper !== paper) return;
+        active.savePending = undefined; active.savedPaperId = paper.id;
+        active.saveNotice = { key: paper.matchStatus === 'unresolved' ? 'savedUnresolved' : 'saved', failure: false }; render();
+      }).catch(error => {
+        if (!current(expected) || !active || active.paper !== paper) return;
+        active.savePending = undefined;
+        active.saveNotice = { key: 'saveFailed', failure: true, detail: error instanceof Error ? error.message : undefined }; render();
+      }); return;
+    }
+    if (button.dataset.action === 'collection') {
+      if (active.collectionPending) return;
+      active.collectionPending = true; render();
+      void rpc<void>({ type: 'OPEN_COLLECTION' }).then(() => {
+        if (!current(expected) || !active) return;
+        active.collectionPending = false; render('collectionOpened');
+      }).catch(error => {
+        if (!current(expected) || !active) return;
+        active.collectionPending = false; render('collectionFailed', true, error instanceof Error ? error.message : undefined);
+      }); return;
+    }
     if (button.dataset.action === 'settings') { void rpc<void>({ type: 'OPEN_SETTINGS' }).catch(() => render('settingsFailed', true)); return; }
     if (button.dataset.action === 'generate' && active.paper) {
-      active.pinned = true;
-      if (closeTimer) window.clearTimeout(closeTimer);
+      pinPanel();
       void showGeneration(expected, active.paper, true); return;
     }
     if (button.dataset.action === 'copy' && active.paper) {
@@ -457,50 +499,60 @@ export function startContentScript(): () => void {
       render('confirming');
       void rpc<Resolution>({ type: 'CONFIRM', candidateId: button.dataset.candidateId, seed }).then(resolution => {
         if (!current(expected) || !active) return;
-        active.resolution = resolution; active.paper = resolution.paper; active.generated = undefined; render('confirmed');
+        active.resolution = resolution; active.paper = resolution.paper; active.generated = undefined;
+        active.savePending = undefined; active.savedPaperId = undefined; active.saveNotice = undefined; render('confirmed');
         void loadOutput(expected, resolution.paper);
       }).catch(error => current(expected) && render('confirmFailed', true, error instanceof Error ? error.message : undefined));
     }
   };
-  const onDragStart = (event: PointerEvent) => {
+  const resizeEdge = (edge: 'top' | 'bottom', change: number, from = panel) => {
+    panel.fullHeight = false;
+    const bottom = from.top + from.height;
+    if (edge === 'top') {
+      panel.top = Math.max(0, Math.min(from.top + change, bottom - minimumHeight()));
+      panel.height = bottom - panel.top;
+    } else panel.height = Math.max(minimumHeight(), Math.min(from.height + change, window.innerHeight - from.top));
+    pinPanel(); positionPanel();
+  };
+  const onResizeStart = (event: PointerEvent) => {
     const target = event.target;
-    if (!active || event.button !== 0 || !(target instanceof Element) || !target.closest('.head') || target.closest('button,a,input,select,textarea')) return;
-    const rect = host.getBoundingClientRect();
-    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
-    if (hoverTimer) window.clearTimeout(hoverTimer);
-    if (closeTimer) window.clearTimeout(closeTimer);
+    if (!active || event.button !== 0 || !(target instanceof Element)) return;
+    const edge = target.closest<HTMLElement>('.resize-handle')?.dataset.edge;
+    if (edge !== 'top' && edge !== 'bottom') return;
+    resizing = { pointerId: event.pointerId, edge, y: event.clientY, top: panel.top, height: panel.height };
+    pinPanel(); host.dataset.resizing = 'true';
     try { host.setPointerCapture?.(event.pointerId); } catch { /* Synthetic pointer events do not support capture. */ }
     event.preventDefault();
   };
-  const onDragMove = (event: PointerEvent) => {
-    if (!drag || !active || event.pointerId !== drag.pointerId) return;
-    const dx = event.clientX - drag.x; const dy = event.clientY - drag.y;
-    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
-    drag.moved = true; active.pinned = true; host.dataset.dragging = 'true';
-    const pin = root.querySelector<HTMLButtonElement>('[data-action="pin"]');
-    if (pin) { pin.textContent = label('unpin'); pin.setAttribute('aria-pressed', 'true'); }
-    moveWithinViewport(host, drag.left + dx, drag.top + dy);
+  const onResizeMove = (event: PointerEvent) => {
+    if (!resizing || !active || event.pointerId !== resizing.pointerId) return;
+    resizeEdge(resizing.edge, event.clientY - resizing.y, { ...resizing, fullHeight: false });
     event.preventDefault();
   };
-  const onDragEnd = (event: PointerEvent) => { if (drag?.pointerId === event.pointerId) finishDrag(); };
-  const onResize = () => {
-    if (!active) return;
-    const rect = host.getBoundingClientRect();
-    moveWithinViewport(host, rect.left, rect.top);
+  const onResizeEnd = (event: PointerEvent) => { if (resizing?.pointerId === event.pointerId) finishResize(); };
+  const onResizeKey = (event: KeyboardEvent) => {
+    const edge = event.target instanceof HTMLElement ? event.target.dataset.edge : undefined;
+    if (!active || (edge !== 'top' && edge !== 'bottom')) return;
+    if (event.key === 'End') { panel.fullHeight = true; positionPanel(); event.preventDefault(); }
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      resizeEdge(edge, (event.key === 'ArrowUp' ? -1 : 1) * (event.shiftKey ? 64 : 24)); event.preventDefault();
+    }
   };
+  const onResize = () => { if (active) positionPanel(); };
   const onWindowFocus = () => { settingsReady = refreshSettings(); };
   settingsReady = refreshSettings();
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('resize', onResize);
-  root.addEventListener('pointerdown', onDragStart as EventListener);
-  document.addEventListener('pointermove', onDragMove, true);
-  document.addEventListener('pointerup', onDragEnd, true);
-  document.addEventListener('pointercancel', onDragEnd, true);
+  root.addEventListener('pointerdown', onResizeStart as EventListener);
+  root.addEventListener('keydown', onResizeKey as EventListener);
+  document.addEventListener('pointermove', onResizeMove, true);
+  document.addEventListener('pointerup', onResizeEnd, true);
+  document.addEventListener('pointercancel', onResizeEnd, true);
   document.addEventListener('mouseover', onOver, true); document.addEventListener('mouseout', onOut, true); document.addEventListener('focusin', onFocus, true); document.addEventListener('keydown', onKey, true); document.addEventListener('pointerdown', onPointerDown, true);
-  host.addEventListener('mouseover', onHostOver); host.addEventListener('mouseout', onHostOut); root.addEventListener('click', onCardClick);
+  root.addEventListener('click', onCardClick);
   const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onDragMove, true); document.removeEventListener('pointerup', onDragEnd, true); document.removeEventListener('pointercancel', onDragEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); host.remove(); };
+  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onResizeMove, true); document.removeEventListener('pointerup', onResizeEnd, true); document.removeEventListener('pointercancel', onResizeEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); host.remove(); };
 }
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.id && typeof document !== 'undefined') startContentScript();

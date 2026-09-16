@@ -2,7 +2,8 @@ import type { Language } from '../shared/languages.ts';
 
 const zh = {
   pin: '固定', unpin: '取消固定', close: '关闭', source: '来源', model: '模型', recordLink: '记录链接', crossrefAbstract: 'Crossref · 摘要',
-  dragHint: '拖动标题栏移动 · 自动固定', contents: '论文内容，可滚动', retryGenerate: '重试生成{language}信息',
+  resizeHint: '拖动上下边框调整高度', resizeTop: '调整上边框（方向键微调，End 恢复全高）', resizeBottom: '调整下边框（方向键微调，End 恢复全高）', fullHeight: '恢复全高',
+  save: '缓存本文', saving: '正在缓存…', savedButton: '更新缓存', saved: '已缓存，可在“下载缓存文章”中管理和导出。', savedUnresolved: '已缓存页面信息；匹配尚未确认。', saveFailed: '缓存失败，请重试。', collection: '下载缓存文章', collectionOpening: '正在打开缓存文章…', collectionOpened: '已打开缓存文章管理页。', collectionFailed: '无法打开缓存文章管理页。', contents: '论文内容，可滚动', retryGenerate: '重试生成{language}信息',
   matched: '已匹配文献记录。', resolving: '正在核对公开文献记录…', chooseMatch: '请选择匹配条目', uncertain: '匹配不确定，请确认条目。',
   abstract: '摘要', noAbstract: '暂无摘要', expandAbstract: '展开原文摘要与{language}翻译', summary: '摘要要点（基于论文摘要）',
   openOriginal: '打开原始页面', copy: '复制信息', generate: '生成{language}信息', settings: '设置',
@@ -18,7 +19,8 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   'zh-CN': zh,
   en: {
     pin: 'Pin', unpin: 'Unpin', close: 'Close', source: 'Source', model: 'Model', recordLink: 'Record link', crossrefAbstract: 'Crossref · Abstract',
-    dragHint: 'Drag the header to move · Pins automatically', contents: 'Paper content, scrollable', retryGenerate: 'Retry {language} generation',
+    resizeHint: 'Drag the top or bottom edge to resize', resizeTop: 'Resize top edge (arrow keys adjust, End restores full height)', resizeBottom: 'Resize bottom edge (arrow keys adjust, End restores full height)', fullHeight: 'Full height',
+    save: 'Save paper', saving: 'Saving…', savedButton: 'Update saved paper', saved: 'Saved. Manage and export it in Download saved papers.', savedUnresolved: 'Page information saved; the match is not confirmed.', saveFailed: 'Unable to save. Please retry.', collection: 'Download saved papers', collectionOpening: 'Opening saved papers…', collectionOpened: 'Saved papers opened.', collectionFailed: 'Unable to open saved papers.', contents: 'Paper content, scrollable', retryGenerate: 'Retry {language} generation',
     matched: 'Literature record matched.', resolving: 'Checking public literature records…', chooseMatch: 'Choose the matching record', uncertain: 'Match uncertain. Please confirm a record.',
     abstract: 'Abstract', noAbstract: 'No abstract available', expandAbstract: 'Show original abstract and {language} translation', summary: 'Key points (based on the paper abstract)',
     openOriginal: 'Open original page', copy: 'Copy information', generate: 'Generate {language} text', settings: 'Settings',
@@ -30,7 +32,8 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   },
   fr: {
     pin: 'Épingler', unpin: 'Détacher', close: 'Fermer', source: 'Source', model: 'Modèle', recordLink: 'Lien vers la notice', crossrefAbstract: 'Crossref · Résumé',
-    dragHint: 'Faites glisser l’en-tête · Épinglage automatique', contents: 'Contenu de l’article, défilable', retryGenerate: 'Réessayer en {language}',
+    resizeHint: 'Faites glisser le bord supérieur ou inférieur', resizeTop: 'Redimensionner le bord supérieur (flèches ; Fin pour toute la hauteur)', resizeBottom: 'Redimensionner le bord inférieur (flèches ; Fin pour toute la hauteur)', fullHeight: 'Toute la hauteur',
+    save: 'Enregistrer l’article', saving: 'Enregistrement…', savedButton: 'Mettre à jour l’article', saved: 'Enregistré. Gérez et exportez l’article dans les articles enregistrés.', savedUnresolved: 'Informations de la page enregistrées ; correspondance non confirmée.', saveFailed: 'Échec de l’enregistrement. Veuillez réessayer.', collection: 'Télécharger les articles enregistrés', collectionOpening: 'Ouverture des articles enregistrés…', collectionOpened: 'Les articles enregistrés sont ouverts.', collectionFailed: 'Impossible d’ouvrir les articles enregistrés.', contents: 'Contenu de l’article, défilable', retryGenerate: 'Réessayer en {language}',
     matched: 'Notice bibliographique trouvée.', resolving: 'Vérification des notices bibliographiques publiques…', chooseMatch: 'Choisissez la notice correspondante', uncertain: 'Correspondance incertaine. Veuillez confirmer une notice.',
     abstract: 'Résumé', noAbstract: 'Aucun résumé disponible', expandAbstract: 'Afficher le résumé original et la traduction en {language}', summary: 'Points clés (d’après le résumé de l’article)',
     openOriginal: 'Ouvrir la page originale', copy: 'Copier les informations', generate: 'Générer le texte en {language}', settings: 'Paramètres',
@@ -42,7 +45,8 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   },
   de: {
     pin: 'Anheften', unpin: 'Loslösen', close: 'Schließen', source: 'Quelle', model: 'Modell', recordLink: 'Link zum Eintrag', crossrefAbstract: 'Crossref · Abstract',
-    dragHint: 'Titelleiste ziehen · Automatisch angeheftet', contents: 'Artikelinhalt, scrollbar', retryGenerate: 'Erneut auf {language} erzeugen',
+    resizeHint: 'Oberen oder unteren Rand zum Anpassen ziehen', resizeTop: 'Oberen Rand anpassen (Pfeiltasten; Ende für volle Höhe)', resizeBottom: 'Unteren Rand anpassen (Pfeiltasten; Ende für volle Höhe)', fullHeight: 'Volle Höhe',
+    save: 'Artikel speichern', saving: 'Wird gespeichert…', savedButton: 'Gespeicherten Artikel aktualisieren', saved: 'Gespeichert. Verwalten und exportieren Sie den Artikel unter Gespeicherte Artikel herunterladen.', savedUnresolved: 'Seiteninformationen gespeichert; Zuordnung noch unbestätigt.', saveFailed: 'Speichern fehlgeschlagen. Bitte erneut versuchen.', collection: 'Gespeicherte Artikel herunterladen', collectionOpening: 'Gespeicherte Artikel werden geöffnet…', collectionOpened: 'Gespeicherte Artikel geöffnet.', collectionFailed: 'Gespeicherte Artikel konnten nicht geöffnet werden.', contents: 'Artikelinhalt, scrollbar', retryGenerate: 'Erneut auf {language} erzeugen',
     matched: 'Literatureintrag gefunden.', resolving: 'Öffentliche Literaturdaten werden geprüft…', chooseMatch: 'Passenden Eintrag auswählen', uncertain: 'Zuordnung unsicher. Bitte bestätigen Sie einen Eintrag.',
     abstract: 'Abstract', noAbstract: 'Kein Abstract verfügbar', expandAbstract: 'Originalabstract und Übersetzung auf {language} anzeigen', summary: 'Kernaussagen (auf Grundlage des Abstracts)',
     openOriginal: 'Originalseite öffnen', copy: 'Informationen kopieren', generate: 'Text auf {language} erzeugen', settings: 'Einstellungen',

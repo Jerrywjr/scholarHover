@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cardPlacement, parseResult, startContentScript } from '../src/content/index.ts';
+import { parseResult, startContentScript } from '../src/content/index.ts';
 import { chooseUniqueMatch } from '../src/shared/matching.ts';
 import type { Generated, SettingsView } from '../src/shared/types.ts';
 
@@ -24,6 +24,7 @@ const cardRoot = () => document.getElementById('scholar-hover-card')!.shadowRoot
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -266,17 +267,22 @@ describe('parseResult', () => {
   });
 });
 
-describe('card placement', () => {
-  it('uses empty desktop space to the right of a result before placing below it', () => {
-    expect(cardPlacement({ left: 80, right: 310, top: 100, bottom: 160 }, { width: 1000, height: 800 })).toEqual({ left: 322, top: 100, maxHeight: 688, side: 'right' });
-  });
-
-  it('keeps the bounded card within a narrow viewport when there is no right-side space', () => {
-    const placement = cardPlacement({ left: 40, right: 300, top: 100, bottom: 160 }, { width: 500, height: 800 });
-    expect(placement.side).toBe('below');
-    expect(placement.left).toBeGreaterThanOrEqual(12);
-    expect(placement.left + 420).toBeLessThanOrEqual(488);
-    expect(placement.top + placement.maxHeight).toBeLessThanOrEqual(788);
+describe('right-side panel placement', () => {
+  it.each([[1280, 900, 420], [320, 600, 320]])('docks to the right and uses the full %sx%s viewport', async (width, height, panelWidth) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('innerWidth', width); vi.stubGlobal('innerHeight', height);
+    const result = paper();
+    vi.spyOn(result, 'getBoundingClientRect').mockReturnValue({ left: 30, right: 200, top: 520, bottom: 560 } as DOMRect);
+    vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    const host = document.getElementById('scholar-hover-card')!;
+    expect(host.style.right).toBe('0px');
+    expect(host.style.top).toBe('0px');
+    expect(host.style.height).toBe(`${height}px`);
+    expect(host.style.width).toBe(`${panelWidth}px`);
+    expect(cardRoot().querySelector('[data-action="reset-height"]')).not.toBeNull();
+    stop();
   });
 });
 
@@ -324,6 +330,25 @@ describe('content interaction', () => {
     stop();
   });
 
+  it('shows successful generated text with a separate saved-copy failure and allows updating the saved copy', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    const sendMessage = vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS'
+      ? settings : message.type === 'RESOLVE' ? matched() : message.type === 'GENERATE'
+        ? { ...generated('zh-CN', '译文生成成功'), collectionWarning: '缓存文章超过 4 MiB 容量，请先删除部分文章。' }
+        : message.type === 'SAVE_PAPER' ? { id: 'paper-1', paper: matched().paper, savedAt: 1, updatedAt: 1 } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.click(); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')!.click(); await flush();
+    expect(cardRoot().querySelector('.translated')?.textContent).toBe('译文生成成功');
+    expect(cardRoot().querySelector('.footer > .status')?.textContent).toContain('已生成');
+    expect(cardRoot().querySelector('.save-status.failure')?.textContent).toContain('4 MiB');
+    expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.disabled).toBe(false);
+    expect(cardRoot().querySelector('[data-action="save"]')?.textContent).toBe('更新缓存'); stop();
+  });
+
   it('does not replace a pressed control when window focus only refreshes unchanged settings', async () => {
     vi.useFakeTimers();
     const result = paper();
@@ -354,30 +379,127 @@ describe('content interaction', () => {
     stop();
   });
 
-  it('drags from the header, pins the card and clamps its position to the viewport', async () => {
-    vi.useFakeTimers();
+  it('resizes at both edges, stays docked, pins and resets to full height', async () => {
+    vi.useFakeTimers(); vi.stubGlobal('innerWidth', 1280); vi.stubGlobal('innerHeight', 900);
     const result = paper();
     vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
     const stop = startContentScript();
     titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
     const host = document.getElementById('scholar-hover-card')!;
-    host.style.left = '120px'; host.style.top = '80px';
-    vi.spyOn(host, 'getBoundingClientRect').mockImplementation(() => ({ left: parseFloat(host.style.left), top: parseFloat(host.style.top), width: 420, height: 360, right: 0, bottom: 0, x: 0, y: 0, toJSON() {} }));
-    const pointer = (type: string, x: number, y: number) => {
-      const event = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, composed: true, cancelable: true });
+    const pointer = (type: string, y: number) => {
+      const event = new MouseEvent(type, { clientX: 1000, clientY: y, button: 0, bubbles: true, composed: true, cancelable: true });
       Object.defineProperty(event, 'pointerId', { value: 1 }); return event;
     };
-    cardRoot().querySelector('.head')!.dispatchEvent(pointer('pointerdown', 150, 100));
-    document.dispatchEvent(pointer('pointermove', 250, 180));
-    expect(host.style.left).toBe('220px'); expect(host.style.top).toBe('160px');
+    cardRoot().querySelector('[data-edge="bottom"]')!.dispatchEvent(pointer('pointerdown', 900));
+    document.dispatchEvent(pointer('pointermove', 700)); document.dispatchEvent(pointer('pointerup', 700));
+    expect(host.style.height).toBe('700px'); expect(host.style.top).toBe('0px'); expect(host.style.right).toBe('0px');
     expect(cardRoot().querySelector('[data-action="pin"]')?.getAttribute('aria-pressed')).toBe('true');
-    document.dispatchEvent(pointer('pointermove', -500, -500));
-    expect(parseFloat(host.style.left)).toBeGreaterThanOrEqual(12);
-    expect(parseFloat(host.style.top)).toBeGreaterThanOrEqual(12);
-    document.dispatchEvent(pointer('pointerup', -500, -500));
+    cardRoot().querySelector('[data-edge="top"]')!.dispatchEvent(pointer('pointerdown', 0));
+    document.dispatchEvent(pointer('pointermove', 100)); document.dispatchEvent(pointer('pointerup', 100));
+    expect(host.style.top).toBe('100px'); expect(host.style.height).toBe('600px');
+    cardRoot().querySelector('[data-edge="bottom"]')!.dispatchEvent(pointer('pointerdown', 700));
+    document.dispatchEvent(pointer('pointermove', -500)); document.dispatchEvent(pointer('pointerup', -500));
+    expect(parseFloat(host.style.height)).toBeGreaterThanOrEqual(360);
+    vi.stubGlobal('innerHeight', 500); window.dispatchEvent(new Event('resize'));
+    expect(parseFloat(host.style.top) + parseFloat(host.style.height)).toBeLessThanOrEqual(500);
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="reset-height"]')!.click();
+    expect(host.style.height).toBe('500px'); expect(host.style.top).toBe('0px');
+    vi.stubGlobal('innerHeight', 900); window.dispatchEvent(new Event('resize'));
+    expect(host.style.height).toBe('900px');
     cardRoot().querySelector<HTMLButtonElement>('[data-action="close"]')!.click();
-    expect(host.style.display).toBe('none');
-    stop();
+    expect(host.style.display).toBe('none'); stop();
+  });
+
+  it('supports keyboard height changes without moving the panel horizontally', async () => {
+    vi.useFakeTimers(); vi.stubGlobal('innerHeight', 900);
+    const result = paper();
+    vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    const host = document.getElementById('scholar-hover-card')!;
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="pin"]')!.click();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="pin"]')!.click();
+    const edge = cardRoot().querySelector('[data-edge="bottom"]')!;
+    edge.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(host.style.height).toBe('876px'); expect(host.style.right).toBe('0px');
+    expect(cardRoot().querySelector('.status')?.textContent).toBe('卡片已固定。');
+    expect(edge.getAttribute('aria-valuenow')).toBe('876');
+    edge.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    expect(host.style.height).toBe('900px'); stop();
+  });
+
+  it('saves by trusted paper ID once, pins the panel and reports durable collection feedback', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    let finishSave!: (value: unknown) => void;
+    const sendMessage = vi.fn((message: { type: string }) => message.type === 'SAVE_PAPER'
+      ? new Promise(resolve => { finishSave = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.click();
+    const saving = cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!;
+    expect(saving.disabled).toBe(true); expect(saving.textContent).toContain('正在缓存'); saving.click();
+    expect(cardRoot().querySelector('[data-action="pin"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(sendMessage.mock.calls.filter(([message]) => message.type === 'SAVE_PAPER')).toEqual([[{ type: 'SAVE_PAPER', paperId: 'paper-1' }]]);
+    finishSave({ ok: true, data: { id: 'paper-1', paper: matched().paper, savedAt: 1, updatedAt: 1 } }); await flush();
+    expect(cardRoot().querySelector('.save-status')?.textContent).toContain('已缓存');
+    const update = cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!;
+    expect(update.disabled).toBe(false); expect(update.textContent).toBe('更新缓存'); update.click();
+    expect(sendMessage.mock.calls.filter(([message]) => message.type === 'SAVE_PAPER')).toHaveLength(2);
+    finishSave({ ok: true, data: { id: 'paper-1', paper: matched().paper, savedAt: 1, updatedAt: 2 } }); await flush();
+    expect(cardRoot().querySelector('[data-action="collection"]')?.textContent).toBe('下载缓存文章'); stop();
+  });
+
+  it('saves an unresolved page record with its warning without choosing a candidate', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    const resolution = { paper: { ...matched('Page metadata', 'page-only').paper, source: 'Google Scholar', abstract: undefined, matchStatus: 'unresolved' }, candidates: [matched('Not confirmed', 'candidate').paper], warning: '存在多个或无法验证的候选记录，需要人工确认。' };
+    const sendMessage = vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? resolution : { id: 'page-only', paper: resolution.paper, savedAt: 1, updatedAt: 1 } }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.click(); await flush();
+    expect(cardRoot().querySelector('.warning')?.textContent).toBe('存在多个或无法验证的候选记录，需要人工确认。');
+    expect(cardRoot().querySelector('.save-status')?.textContent).toContain('匹配尚未确认');
+    expect(sendMessage.mock.calls.filter(([message]) => message.type === 'SAVE_PAPER')).toEqual([[{ type: 'SAVE_PAPER', paperId: 'page-only' }]]);
+    expect(sendMessage.mock.calls.some(([message]) => message.type === 'CONFIRM')).toBe(false); stop();
+  });
+
+  it('offers a manual retry after a save error and ignores save completion after close', async () => {
+    vi.useFakeTimers();
+    const result = paper(); let finishSave!: (value: unknown) => void; let attempts = 0;
+    const sendMessage = vi.fn((message: { type: string }) => message.type === 'SAVE_PAPER'
+      ? ++attempts === 1 ? Promise.resolve({ ok: false, error: '扩展存储初始化失败，请重新加载扩展。' }) : new Promise(resolve => { finishSave = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.click(); await flush();
+    expect(cardRoot().querySelector('.save-status.failure')?.textContent).toContain('扩展存储初始化失败');
+    expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.disabled).toBe(false);
+    window.dispatchEvent(new Event('focus')); await flush(); expect(attempts).toBe(1);
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    finishSave({ ok: true, data: { id: 'paper-1', paper: matched().paper, savedAt: 1, updatedAt: 1 } }); await flush();
+    expect(document.getElementById('scholar-hover-card')!.style.display).toBe('none');
+    expect(cardRoot().querySelector('.save-status')).toBeNull(); stop();
+  });
+
+  it('opens the collection while metadata is still pending and localizes controls', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    const sendMessage = vi.fn((message: { type: string }) => message.type === 'RESOLVE' ? new Promise(() => {})
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? { ...settings, uiLanguage: 'en' } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="save"]')!.disabled).toBe(true);
+    expect(cardRoot().querySelector('[data-action="save"]')!.textContent).toBe('Save paper');
+    expect(cardRoot().querySelector('[data-action="reset-height"]')!.textContent).toBe('Full height');
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="collection"]')!.click(); await flush();
+    expect(sendMessage.mock.calls.filter(([message]) => message.type === 'OPEN_COLLECTION')).toEqual([[{ type: 'OPEN_COLLECTION' }]]); stop();
   });
 
   it('debounces hover and resolves only after 500ms', async () => {
@@ -392,6 +514,25 @@ describe('content interaction', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(sendMessage.mock.calls.some(([message]) => message.type === 'RESOLVE')).toBe(true);
     stop();
+  });
+
+  it('keeps the docked panel open while crossing empty page space and closes on an outside click', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
+    const stop = startContentScript();
+    const heading = titleTarget(result);
+    heading.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    const host = document.getElementById('scholar-hover-card')!;
+    heading.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(host.style.display).toBe('block');
+    host.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    host.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(host.style.display).toBe('block');
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    expect(host.style.display).toBe('none'); stop();
   });
 
   it('does not resolve when the pointer leaves before the hover delay', async () => {

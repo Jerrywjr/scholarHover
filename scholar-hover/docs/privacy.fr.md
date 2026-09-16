@@ -1,10 +1,10 @@
 # Scholar Hover · Avis de confidentialité
 
-Version 0.2.0 · 2026-09-15
+Version 0.3.0 · 2026-09-16
 
 [简体中文](privacy.md) · [English](privacy.en.md) · [Deutsch](privacy.de.md)
 
-Cette extension complète uniquement les pages de résultats que l’utilisateur ouvre sur https://scholar.google.com/scholar. Elle lit le titre, les auteurs, l’année, le support de publication et les liens du résultat activé afin d’identifier l’article. Elle n’automatise ni les recherches, ni le passage aux pages suivantes, ni la récupération du texte intégral. Elle ne nécessite aucun compte produit et ne dispose pas de serveur exploité par le projet.
+Cette extension complète uniquement les pages de résultats que l’utilisateur ouvre sur https://scholar.google.com/scholar. Elle lit le titre, les auteurs, l’année, le support de publication et les liens du résultat activé afin d’identifier l’article. Elle n’automatise ni les recherches ni le passage aux pages suivantes ; les téléchargements de textes intégraux sont lancés explicitement par l’utilisateur dans le gestionnaire. Elle ne nécessite aucun compte produit et ne dispose pas de serveur exploité par le projet.
 
 ## Destinataires des données
 
@@ -28,3 +28,11 @@ L’extension fonctionne uniquement sur les pages de recherche d’articles de S
 Cette version ne contient ni publicité, ni télémétrie automatique, ni envoi en arrière-plan de l’historique d’utilisation. Les diagnostics de test sont conservés localement ; vérifiez leur contenu avant de les partager. Les résultats du modèle peuvent être erronés. Les traductions de résumés et les synthèses indiquent les sources sur lesquelles elles reposent ; elles ne remplacent ni les conclusions tirées du texte intégral ni une évaluation de la qualité de l’article. Les essais sur des pages réelles et les vérifications humaines, notamment par des locuteurs natifs des quatre langues, ne sont pas terminés.
 
 Ce paquet de test n’a pas été publié. La publication sur un dépôt GitHub public attend la confirmation explicite de l’utilisateur après son essai. Avant une publication officielle en boutique, l’éditeur doit fournir sur la fiche de l’extension un moyen de contact fonctionnel et une adresse publique pour le présent avis de confidentialité.
+
+## Enregistrement et export explicites (0.3.0)
+
+Enregistrer un article conserve les métadonnées, liens sources et traductions disponibles dans une collection locale distincte, limitée à 200 articles et 4 Mio, sans expiration automatique. Les données restent jusqu’à leur suppression, l’effacement de la collection ou la désinstallation. La durée de sept jours du cache de génération et son effacement ne concernent pas cette collection. Une génération ultérieure réussie met à jour l’article enregistré uniquement si le contenu source correspond toujours.
+
+L’export Markdown et des originaux utilise l’autorisation downloads pour créer un fichier Markdown et tenter de télécharger les PDF connus. Les requêtes vont au fournisseur du texte intégral, avec les cookies existants du site transmis par Chrome ; aucune clé de modèle ou OpenAlex ne lui est envoyée. Le texte intégral n’est pas transmis au modèle. Les échecs sont expliqués ; la page originale du premier échec du lot s’ouvre automatiquement et les autres disposent de liens. L’utilisateur effectue lui-même la connexion, l’authentification institutionnelle et les CAPTCHA.
+
+Les noms de fichiers, liens sources et états du dernier lot sont conservés localement pour vérification et nouvelle tentative. Une réponse non PDF n’est pas considérée comme un succès ; l’extension tente de supprimer uniquement ce fichier invalide créé par le lot. Les fichiers exportés restent dans le dossier de téléchargement après suppression de la collection, du cache ou de l’extension. Aucun envoi en arrière-plan ni aucune télémétrie n’est ajouté.

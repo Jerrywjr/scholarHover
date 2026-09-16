@@ -10,6 +10,8 @@ export interface PaperSeed {
 }
 export interface Paper extends PaperSeed {
   id: string;
+  downloadUrl?: string;
+  downloadVersion?: string;
   abstract?: string;
   source: 'OpenAlex' | 'Crossref' | 'Google Scholar';
   sourceUrl: string;
@@ -23,6 +25,7 @@ export interface Resolution {
   timings?: Record<string, number>;
 }
 export interface Generated {
+  collectionWarning?: string;
   titleTranslated: string;
   abstractTranslated: string | null;
   language: Language;
@@ -45,6 +48,35 @@ export interface SettingsView extends Settings {
   hasOpenAlexKey: boolean;
 }
 export interface Credentials { apiKey: string; openAlexKey: string }
+export interface SavedPaper {
+  id: string;
+  paper: Paper;
+  generated?: Generated;
+  savedAt: number;
+  updatedAt: number;
+}
+export interface CollectionSnapshot { revision: number; items: SavedPaper[] }
+export type DownloadState = 'queued' | 'downloading' | 'complete' | 'failed';
+export interface ExportItem {
+  id: string;
+  number: number;
+  title: string;
+  filename: string;
+  url?: string;
+  pageUrl: string;
+  state: DownloadState;
+  downloadId?: number;
+  error?: string;
+  authOpened?: boolean;
+}
+export interface ExportBatch {
+  id: string;
+  createdAt: number;
+  folder: string;
+  authPageOpened?: boolean;
+  items: ExportItem[];
+  markdown: { filename: string; state: DownloadState; downloadId?: number; error?: string };
+}
 export type Request =
   | { type: 'RESOLVE'; seed: PaperSeed }
   | { type: 'CONFIRM'; candidateId: string; seed: PaperSeed }
@@ -55,5 +87,14 @@ export type Request =
   | { type: 'TEST_CONNECTION' }
   | { type: 'CLEAR_CACHE' }
   | { type: 'CLEAR_KEYS' }
-  | { type: 'OPEN_SETTINGS' };
+  | { type: 'OPEN_SETTINGS' }
+  | { type: 'SAVE_PAPER'; paperId: string }
+  | { type: 'OPEN_COLLECTION' }
+  | { type: 'GET_COLLECTION' }
+  | { type: 'REMOVE_SAVED'; id: string; revision: number }
+  | { type: 'REORDER_SAVED'; ids: string[]; revision: number }
+  | { type: 'CLEAR_COLLECTION'; revision: number }
+  | { type: 'EXPORT_COLLECTION'; revision: number }
+  | { type: 'GET_EXPORT' }
+  | { type: 'RETRY_DOWNLOAD'; batchId: string; itemId: string };
 export type Response<T> = { ok: true; data: T } | { ok: false; error: string };

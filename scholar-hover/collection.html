@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>知阅 · 缓存文章</title>
+    <link rel="stylesheet" href="/src/collection/style.css" />
+  </head>
+  <body>
+    <main id="collection-page">
+      <header class="page-heading">
+        <div><span class="eyebrow">SCHOLAR HOVER</span><h1 data-i18n="heading">本次检索的缓存文章</h1><p data-i18n="introduction">把值得阅读的文章留下，再按你的顺序带走。</p></div>
+        <a href="options.html" class="settings-link" data-i18n="settings">设置</a>
+      </header>
+      <section class="collection-toolbar" aria-label="Collection actions">
+        <span id="paper-count" class="count"></span>
+        <button type="button" data-action="export" class="primary" data-i18n="export" disabled>下载缓存文章</button>
+        <button type="button" data-action="refresh" data-i18n="refresh" disabled>刷新列表与下载状态</button>
+        <button type="button" data-action="clear" class="danger" data-i18n="clear" disabled>开始新的检索</button>
+      </section>
+      <p id="collection-status" role="status" aria-live="polite"></p>
+      <div class="workspace">
+        <section class="collection-section" aria-labelledby="collection-heading">
+          <h2 id="collection-heading" data-i18n="collectionHeading">待导出的文章</h2>
+          <p class="hint" data-i18n="orderHint"></p>
+          <div id="collection-empty" class="empty" hidden><span class="empty-mark" aria-hidden="true">＋</span><h3 data-i18n="emptyTitle"></h3><p data-i18n="emptyHint"></p></div>
+          <ol id="paper-list"></ol>
+          <details id="preview-details" class="preview">
+            <summary data-i18n="preview">预览 Markdown</summary>
+            <p class="hint" data-i18n="previewHint"></p>
+            <textarea id="markdown-preview" readonly spellcheck="false"></textarea>
+          </details>
+        </section>
+        <aside>
+          <section class="download-panel" aria-labelledby="download-heading">
+            <h2 id="download-heading" data-i18n="downloadHeading">最近一次导出</h2>
+            <p class="hint" data-i18n="exportHint"></p>
+            <div id="download-status" aria-live="polite"></div>
+            <p class="hint" data-i18n="snapshotHint"></p>
+            <p class="auth-hint" data-i18n="authHint"></p>
+          </section>
+          <p class="local-notice" data-i18n="localNotice"></p>
+        </aside>
+      </div>
+    </main>
+    <script type="module" src="/src/collection/index.ts"></script>
+  </body>
+</html>

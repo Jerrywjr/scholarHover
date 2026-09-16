@@ -19,7 +19,7 @@ function safeUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   try {
     const parsed = new URL(value);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : undefined;
+    return ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : undefined;
   } catch {
     return undefined;
   }
@@ -121,6 +121,11 @@ function paperFromWork(work: OpenAlexWork, sourceUrl: string, matchStatus: Paper
     { name: 'OpenAlex', url: safeUrl(typeof work.id === 'string' ? work.id : undefined) },
     canonicalUrl ? { name: sourceName ?? 'Publisher', url: canonicalUrl } : undefined,
   ].filter((entry): entry is { name: string; url: string } => Boolean(entry?.url));
+  const primary = work.primary_location && typeof work.primary_location === 'object'
+    ? work.primary_location as { pdf_url?: unknown; version?: unknown } : undefined;
+  // Open-access alternatives can be an earlier manuscript. Preserve the matched
+  // primary publication version instead of silently substituting that copy.
+  const downloadUrl = safeUrl(primary?.pdf_url);
   return {
     title,
     authors: workAuthors(work),
@@ -130,6 +135,7 @@ function paperFromWork(work: OpenAlexWork, sourceUrl: string, matchStatus: Paper
     venue: sourceName,
     preprint: typeof work.type === 'string' ? /preprint/i.test(work.type) : undefined,
     id,
+    ...(downloadUrl ? { downloadUrl, downloadVersion: typeof primary?.version === 'string' ? primary.version : undefined } : {}),
     source: 'OpenAlex',
     sourceUrl,
     sources: sources.length ? sources : undefined,
