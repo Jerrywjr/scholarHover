@@ -4,11 +4,11 @@ Version 0.4.0 · 2026-09-16
 
 [简体中文](privacy.md) · [Français](privacy.fr.md) · [Deutsch](privacy.de.md)
 
-This extension only enhances search results pages that the user opens at https://scholar.google.com/scholar. It reads the triggered result's title, authors, year, publication venue and links to identify the paper. It does not automate searching or pagination; full-text downloads are explicitly started by the user in the collection manager, and has no product account or project-operated server.
+This extension only enhances search results pages that the user opens at https://scholar.google.com/scholar. It reads titles, authors, years, publication venues and links from the current results page locally to identify papers and display unviewed, viewed and saved badges. It does not send untriggered results to external metadata services in bulk. Only papers whose preview the user activates or that the user explicitly saves are queried through external services under the rules below. It does not automate searching or pagination. Full-text downloads are explicitly started by the user in the collection manager. There is no product account or project-operated server.
 
 ## Where data is sent
 
-- OpenAlex receives the triggered paper's DOI or title to retrieve metadata and abstracts. If an OpenAlex key is provided, that key is sent only to api.openalex.org.
+- OpenAlex receives the DOI or title of a paper whose preview the user activates or that the user explicitly saves, to retrieve metadata and abstracts. If an OpenAlex key is provided, that key is sent only to api.openalex.org.
 - Crossref receives the DOI when needed to supplement missing metadata for the same paper.
 - The model service configured by the user receives the current paper's title, retrieved abstract and translation instructions for the selected output language only after configuration and consent to external transmission. Without an abstract, only the title and translation instructions are sent; no abstract or summary is generated. The model API key is sent only to the configured HTTPS service address. The provider determines its own data retention rules.
 - Automatic mode can call the model after a qualifying hover and may incur charges. Generation can instead require a click. Choosing **Save paper** also requests background completion, even when automatic hover generation is disabled; model calls still require existing consent, a valid key and model-domain permission. Matching saved results are reused. Closing the card or Scholar tab does not cancel completion of saved papers or guarantee cancellation of charges already incurred at the provider.
@@ -27,9 +27,9 @@ Paper previews, matching candidates and generated results are archived only in l
 
 The extension runs only on Scholar paper search pages. OpenAlex and Crossref permissions allow metadata access. Access to a custom model domain is requested separately when the user saves configuration. The optional HTTPS domain range in the manifest supports user-defined addresses; installation does not grant access to every website. The `offscreen` permission lets an extension-owned hidden page and dedicated Worker wait for slower model responses. That page does not read website content, and the model key is still sent only to the configured model endpoint.
 
-This version has no ads, automatic telemetry or background uploads of usage records. Test diagnostics are stored locally; inspect them before sharing. Model output may be incorrect. Abstract translations and summaries identify their source basis and cannot substitute for conclusions from the full paper or a paper quality score. Live-page trials and human review, including native-speaker review in all four languages, remain incomplete.
+This version has no ads, automatic telemetry or background uploads of usage records. Test diagnostics are stored locally; inspect them before sharing. Model output may be incorrect. Abstract translations and summaries identify their source basis and cannot substitute for conclusions from the full paper or a paper quality score. Live-page trials, human review including native-speaker review in all four languages, and controlled user evaluation of paper-screening effectiveness remain incomplete.
 
-This test package has not been publicly released. Public GitHub publication awaits the user's explicit confirmation after a trial. Before an official store release, the publisher must provide a working contact channel and a public URL for this privacy notice on the store page.
+Version 0.4.0 is an open-source experimental release for public testing: [GitHub project](https://github.com/Jerrywjr/scholar-hover). Report problems and contact the project publicly through [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues). Publication on GitHub is separate from publication in the Chrome Web Store; this version has not been submitted to or listed in that store. A future store submission will include a working contact channel and a public URL for this privacy notice on the store page.
 
 ## Explicit saving, background completion and export (0.4.0)
 

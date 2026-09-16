@@ -4,11 +4,11 @@ A desktop Chrome extension that helps you inspect a Google Scholar result before
 
 [简体中文说明](README.zh-CN.md)
 
-**This is an installable prototype, not a publicly released or human-validated product.** Real Scholar matching, translation quality and user value still require trials. Public GitHub publication is explicitly pending the user's confirmation after trying the extension. Human review, including review by native speakers of the supported languages, remains pending. See the [0.4.0 preview archive and background completion report](docs/test-report-0.4.0.md). Earlier checks are documented in the [0.3.1 slow-model request report](docs/test-report-0.3.1.md), the [0.3.0 collection and download report](docs/test-report-0.3.0.md), and the [0.2.0 multilingual report](docs/test-report-multilingual.md); these describe their respective releases. Neither offline fixtures nor metadata-derived inputs establish real Scholar accuracy.
+**Version 0.4.0 is an open-source experimental release.** Install it manually from [GitHub Releases](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0); it has not been submitted to or published in the Chrome Web Store. Real Scholar matching, translation quality and usefulness still need human evaluation, including native-speaker review of the four languages. The [0.4.0 test report](docs/test-report-0.4.0.md) describes the automated checks and their limits. Offline fixtures and metadata-derived inputs do not establish real Scholar accuracy.
 
 ## Install and configure
 
-1. Extract `release/scholar-hover-0.4.0.zip` into a permanent folder. A source build can also be loaded directly from `dist`.
+1. Download [scholar-hover-0.4.0.zip](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip) from the [v0.4.0 release](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) and extract it into a permanent folder. Use the extension ZIP, rather than GitHub's automatically generated source-code ZIP. A source build can also be loaded directly from `dist`.
 2. Open `chrome://extensions` in Chrome and enable **Developer mode**.
 3. Choose **Load unpacked**, then select the extracted folder containing `manifest.json`, or the built `dist` folder.
 4. Open settings from the extension icon. Choose the interface and output languages, enter the model API base URL, API model identifier and API key, read the external data notice, give consent and save. Chrome requests access to the specific model service domain when you save.
@@ -16,7 +16,9 @@ A desktop Chrome extension that helps you inspect a Google Scholar result before
 
 Use the provider's versioned **base URL**, such as `https://api.example.com/v1`; the extension appends `/chat/completions`. Do not enter the full completion URL. Use the provider's API model identifier, not a marketing name. Only plain-text, non-streaming Chat Completions are supported; compatibility with every provider is not guaranteed. The connection test sends one short model request and may incur a charge.
 
-When upgrading an unpacked extension, replace its files in the same fixed directory, click Reload on the extensions page, then refresh Scholar. Loading a different directory may create a separate extension instance that needs configuration again. Version 0.4.0 migrates the existing generated-text cache into the local IndexedDB archive and removes the old copies only after the archive transaction commits. Migration failure retains the original records. Existing settings and saved papers are retained; generated text is reusable only when its content and configuration fingerprint matches. Earlier ZIP files are retained for comparison.
+The release also provides a [SHA-256 checksum](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip.sha256) for the extension ZIP.
+
+When upgrading an unpacked extension, replace its files in the same fixed directory, click Reload on the extensions page, then refresh Scholar. Loading a different directory may create a separate extension instance that needs configuration again. Version 0.4.0 migrates the existing generated-text cache into the local IndexedDB archive and removes the old copies only after the archive transaction commits. Migration failure retains the original records. Existing settings and saved papers are retained; generated text is reusable only when its content and configuration fingerprint matches.
 
 ## Languages and daily use
 
@@ -24,7 +26,7 @@ Interface language and output language are independent: for example, you can use
 
 Changing the interface language keeps reusable generated results. Changing the output language uses a separate cache entry: an English result cannot satisfy a request for a German translation. Source titles, source abstracts and bibliographic metadata remain as received. The translated title, abstract and one-sentence summary use the selected output language; changing that setting does not translate the original source text in place.
 
-- Hovering first shows available page information, followed by indexed metadata and then model output. Initial completion time depends on the network and providers; immediate generation is not promised.
+- Hovering checks the local archive before querying metadata services. Compatible archived metadata and translations appear together. For a new paper, the card first shows page information, then indexed metadata and model output as they become available. Initial completion time depends on the network and providers; immediate generation is not promised. Viewed/saved badges are read locally for the current results page without querying external services for every result.
 - The preview is docked to the right at 420 px wide, constrained on narrow windows, and fills the visible browser height by default. Drag its top or bottom edge to resize vertically, or reset to full height. Scroll the content with a wheel, trackpad or keyboard. The panel stays open while crossing the page; outside click, Close or Esc dismiss it when unpinned. Pinning keeps the current paper while other titles are hovered.
 - Ambiguous matches require candidate confirmation. An explicit preprint is not silently replaced by a published version. If identity cannot be confirmed, the original page information is retained. Without an abstract, only the title can be translated; no abstract or summary is invented.
 - Disable automatic generation to request output by clicking. A manual request pins the card and disables the button while it displays generation progress. Results appear when ready; progress and specific errors stay in the footer. Failures enable an explicit retry button, and Settings remains available. Connection tests time out after 25 seconds; full generation allows up to 90 seconds for the response to start and 90 seconds for the response body to finish. Failures do not retry automatically. If the pointer leaves a paper before metadata or cache lookup completes, the extension defers a new automatic model request until the reader returns to its card.
@@ -52,7 +54,7 @@ This version has no JIF, PDF reading workflow, library synchronization, addition
 
 ## Development and reproducible checks
 
-Use Node.js 22 or a later supported version and the npm lockfile. Dependency and browser installation need network access; the tests below use local fixtures once their dependencies are available.
+Use Node.js 22 or a later supported version and the npm lockfile. Run these commands from the repository's `scholar-hover/` directory. Dependency and browser installation need network access; the tests below use local fixtures once their dependencies are available.
 
 ```sh
 npm ci
@@ -67,7 +69,13 @@ npm run package
 
 The E2E script loads the real `dist` extension in a temporary, isolated Chromium profile, with offline Scholar pages and API response fixtures. It does not call live Scholar or paid models. Permission grant and denial logic has automated coverage; browser tests use a controlled permission boundary and do not validate Chrome's real authorization dialog. Screenshots and timings are written to `test-results`. Rebuild after source changes before running E2E. Current checks and their limits are recorded in the [0.4.0 report](docs/test-report-0.4.0.md).
 
-Packaging creates an unpackable ZIP and SHA-256 checksum; it does not sign the extension or upload it to a store. A [store listing draft](docs/store-listing.md) exists. Publication still requires review of trial results and release materials; public GitHub publication awaits explicit confirmation after the user trial.
+Packaging creates an unpackable ZIP and SHA-256 checksum; it does not sign the extension or upload it to a store. The [store listing](docs/store-listing.md) remains a draft. See [release status and remaining checks](docs/release-readiness.md) for the distinction between the GitHub experiment, store submission and human evaluation.
+
+## Report a problem
+
+Use [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues) for bugs and feature requests. Include the extension and Chrome versions, steps to reproduce, expected and actual behavior, and a public paper link or DOI when it helps. For model failures, include the provider and API model name without credentials. Remove API keys, login details and private content from screenshots or logs before posting; issues are public.
+
+Code and documentation contributions are welcome. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the development workflow and language-review guidance.
 
 ## Human evaluation
 
@@ -80,5 +88,7 @@ node scripts/evaluate-corpus.mjs --require-human-review
 ```
 
 The collection command checks existing files by default; only an explicit `--refresh` collects data from the network again. Without completed human review, the evaluator reports `NOT VALIDATED`, and strict mode exits with code 2. The target is at least 80 correct automatic matches and zero incorrect automatic matches among 100 papers; abstract coverage is reported separately. These targets are not achieved results.
+
+Historical checks are documented in the [0.3.1 slow-model request report](docs/test-report-0.3.1.md), [0.3.0 collection and download report](docs/test-report-0.3.0.md), and [0.2.0 multilingual report](docs/test-report-multilingual.md). Each describes that version, rather than the current release status.
 
 Code is available under the [MIT license](../LICENSE). Third-party services and data retain their own terms.
