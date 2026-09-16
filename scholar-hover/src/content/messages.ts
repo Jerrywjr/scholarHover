@@ -2,6 +2,7 @@ import type { Language } from '../shared/languages.ts';
 
 const zh = {
   pin: '固定', unpin: '取消固定', close: '关闭', source: '来源', model: '模型', recordLink: '记录链接', crossrefAbstract: 'Crossref · 摘要',
+  dragHint: '拖动标题栏移动 · 自动固定', contents: '论文内容，可滚动', retryGenerate: '重试生成{language}信息',
   matched: '已匹配文献记录。', resolving: '正在核对公开文献记录…', chooseMatch: '请选择匹配条目', uncertain: '匹配不确定，请确认条目。',
   abstract: '摘要', noAbstract: '暂无摘要', expandAbstract: '展开原文摘要与{language}翻译', summary: '摘要要点（基于论文摘要）',
   openOriginal: '打开原始页面', copy: '复制信息', generate: '生成{language}信息', settings: '设置',
@@ -17,6 +18,7 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   'zh-CN': zh,
   en: {
     pin: 'Pin', unpin: 'Unpin', close: 'Close', source: 'Source', model: 'Model', recordLink: 'Record link', crossrefAbstract: 'Crossref · Abstract',
+    dragHint: 'Drag the header to move · Pins automatically', contents: 'Paper content, scrollable', retryGenerate: 'Retry {language} generation',
     matched: 'Literature record matched.', resolving: 'Checking public literature records…', chooseMatch: 'Choose the matching record', uncertain: 'Match uncertain. Please confirm a record.',
     abstract: 'Abstract', noAbstract: 'No abstract available', expandAbstract: 'Show original abstract and {language} translation', summary: 'Key points (based on the paper abstract)',
     openOriginal: 'Open original page', copy: 'Copy information', generate: 'Generate {language} text', settings: 'Settings',
@@ -28,6 +30,7 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   },
   fr: {
     pin: 'Épingler', unpin: 'Détacher', close: 'Fermer', source: 'Source', model: 'Modèle', recordLink: 'Lien vers la notice', crossrefAbstract: 'Crossref · Résumé',
+    dragHint: 'Faites glisser l’en-tête · Épinglage automatique', contents: 'Contenu de l’article, défilable', retryGenerate: 'Réessayer en {language}',
     matched: 'Notice bibliographique trouvée.', resolving: 'Vérification des notices bibliographiques publiques…', chooseMatch: 'Choisissez la notice correspondante', uncertain: 'Correspondance incertaine. Veuillez confirmer une notice.',
     abstract: 'Résumé', noAbstract: 'Aucun résumé disponible', expandAbstract: 'Afficher le résumé original et la traduction en {language}', summary: 'Points clés (d’après le résumé de l’article)',
     openOriginal: 'Ouvrir la page originale', copy: 'Copier les informations', generate: 'Générer le texte en {language}', settings: 'Paramètres',
@@ -39,6 +42,7 @@ const messages: Record<Language, Record<ContentMessageKey, string>> = {
   },
   de: {
     pin: 'Anheften', unpin: 'Loslösen', close: 'Schließen', source: 'Quelle', model: 'Modell', recordLink: 'Link zum Eintrag', crossrefAbstract: 'Crossref · Abstract',
+    dragHint: 'Titelleiste ziehen · Automatisch angeheftet', contents: 'Artikelinhalt, scrollbar', retryGenerate: 'Erneut auf {language} erzeugen',
     matched: 'Literatureintrag gefunden.', resolving: 'Öffentliche Literaturdaten werden geprüft…', chooseMatch: 'Passenden Eintrag auswählen', uncertain: 'Zuordnung unsicher. Bitte bestätigen Sie einen Eintrag.',
     abstract: 'Abstract', noAbstract: 'Kein Abstract verfügbar', expandAbstract: 'Originalabstract und Übersetzung auf {language} anzeigen', summary: 'Kernaussagen (auf Grundlage des Abstracts)',
     openOriginal: 'Originalseite öffnen', copy: 'Informationen kopieren', generate: 'Text auf {language} erzeugen', settings: 'Einstellungen',

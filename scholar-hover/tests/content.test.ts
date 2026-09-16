@@ -281,6 +281,105 @@ describe('card placement', () => {
 });
 
 describe('content interaction', () => {
+  it('shows a disabled progress button and persistent feedback for a manual generation', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    let finish!: (value: unknown) => void;
+    const sendMessage = vi.fn((message: { type: string }) => message.type === 'GENERATE'
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')!.click();
+    const pendingButton = cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')!;
+    expect(pendingButton.disabled).toBe(true);
+    expect(pendingButton.textContent).toContain('正在生成');
+    expect(cardRoot().querySelector('.footer [role="status"]')?.textContent).toContain('正在生成');
+    expect(cardRoot().querySelector('[data-action="pin"]')?.getAttribute('aria-pressed')).toBe('true');
+    pendingButton.click();
+    expect(sendMessage.mock.calls.filter(([message]) => message.type === 'GENERATE')).toHaveLength(1);
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="pin"]')!.click();
+    expect(cardRoot().querySelector('.footer [role="status"]')?.textContent).toContain('正在生成');
+    expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')?.disabled).toBe(true);
+    finish({ ok: true, data: generated('zh-CN', '生成完成') }); await flush();
+    expect(cardRoot().querySelector('.card')?.getAttribute('aria-busy')).toBe('false');
+    expect(cardRoot().querySelector('.footer [role="status"]')?.textContent).toContain('已生成');
+    stop();
+  });
+
+  it('keeps a generation failure beside an enabled explicit retry button', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    const sendMessage = vi.fn((message: { type: string }) => Promise.resolve(message.type === 'GENERATE'
+      ? { ok: false, error: 'API Key 无效或未获授权' }
+      : { ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')!.click(); await flush();
+    expect(cardRoot().querySelector('.footer .failure')?.textContent).toContain('API Key 无效');
+    expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')?.disabled).toBe(false);
+    expect(cardRoot().querySelector('[data-action="generate"]')?.textContent).toContain('重试');
+    stop();
+  });
+
+  it('does not replace a pressed control when window focus only refreshes unchanged settings', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    const sendMessage = vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS'
+      ? settings : message.type === 'RESOLVE' ? matched() : message.type === 'GENERATE' ? generated('zh-CN', '第一次点击成功') : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    const pressed = cardRoot().querySelector<HTMLButtonElement>('[data-action="generate"]')!;
+    pressed.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+    window.dispatchEvent(new Event('focus')); await flush();
+    pressed.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true })); await flush();
+    expect(cardRoot().textContent).toContain('第一次点击成功');
+    stop();
+  });
+
+  it('preserves abstract expansion and reading position when pinning redraws the card', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    cardRoot().querySelector<HTMLDetailsElement>('details')!.open = true;
+    cardRoot().querySelector<HTMLElement>('.body')!.scrollTop = 380;
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="pin"]')!.click();
+    expect(cardRoot().querySelector<HTMLDetailsElement>('details')!.open).toBe(true);
+    expect(cardRoot().querySelector<HTMLElement>('.body')!.scrollTop).toBe(380);
+    stop();
+  });
+
+  it('drags from the header, pins the card and clamps its position to the viewport', async () => {
+    vi.useFakeTimers();
+    const result = paper();
+    vi.stubGlobal('chrome', { runtime: { sendMessage: vi.fn((message: { type: string }) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings : message.type === 'RESOLVE' ? matched() : undefined })) } });
+    const stop = startContentScript();
+    titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500); await flush();
+    const host = document.getElementById('scholar-hover-card')!;
+    host.style.left = '120px'; host.style.top = '80px';
+    vi.spyOn(host, 'getBoundingClientRect').mockImplementation(() => ({ left: parseFloat(host.style.left), top: parseFloat(host.style.top), width: 420, height: 360, right: 0, bottom: 0, x: 0, y: 0, toJSON() {} }));
+    const pointer = (type: string, x: number, y: number) => {
+      const event = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, composed: true, cancelable: true });
+      Object.defineProperty(event, 'pointerId', { value: 1 }); return event;
+    };
+    cardRoot().querySelector('.head')!.dispatchEvent(pointer('pointerdown', 150, 100));
+    document.dispatchEvent(pointer('pointermove', 250, 180));
+    expect(host.style.left).toBe('220px'); expect(host.style.top).toBe('160px');
+    expect(cardRoot().querySelector('[data-action="pin"]')?.getAttribute('aria-pressed')).toBe('true');
+    document.dispatchEvent(pointer('pointermove', -500, -500));
+    expect(parseFloat(host.style.left)).toBeGreaterThanOrEqual(12);
+    expect(parseFloat(host.style.top)).toBeGreaterThanOrEqual(12);
+    document.dispatchEvent(pointer('pointerup', -500, -500));
+    cardRoot().querySelector<HTMLButtonElement>('[data-action="close"]')!.click();
+    expect(host.style.display).toBe('none');
+    stop();
+  });
+
   it('debounces hover and resolves only after 500ms', async () => {
     vi.useFakeTimers();
     const seed = paper();

@@ -28,6 +28,7 @@ type Active = {
 type CardFocus =
   | { kind: 'button'; action: string; candidateId?: string }
   | { kind: 'summary' }
+  | { kind: 'body' }
   | { kind: 'link'; href: string; className: string };
 
 function cleanTitle(value: string): string {
@@ -109,7 +110,7 @@ function createHost(): HTMLElement {
 export function cardPlacement(rect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>, viewport: { width: number; height: number }): { left: number; top: number; maxHeight: number; side: 'right' | 'below' | 'above' } {
   const width = Math.min(420, Math.max(0, viewport.width - 24));
   const rightLeft = rect.right + 12;
-  const alignedTop = Math.max(12, rect.top);
+  const alignedTop = Math.max(12, Math.min(rect.top, viewport.height - Math.min(320, viewport.height - 24) - 12));
   if (width >= 260 && rightLeft + width <= viewport.width - 12) {
     return { left: rightLeft, top: alignedTop, maxHeight: Math.max(80, viewport.height - alignedTop - 12), side: 'right' };
   }
@@ -126,15 +127,31 @@ function position(host: HTMLElement, target: Element): void {
   host.style.left = `${placement.left}px`;
   host.style.top = `${placement.top}px`;
   host.style.maxHeight = `${placement.maxHeight}px`;
+  host.style.setProperty('--card-max-height', `${placement.maxHeight}px`);
+}
+
+function moveWithinViewport(host: HTMLElement, left: number, top: number): void {
+  const rect = host.getBoundingClientRect();
+  const width = rect.width || Math.min(420, window.innerWidth - 24);
+  const height = Math.min(rect.height, Math.max(0, window.innerHeight - 24));
+  const x = Math.max(12, Math.min(left, window.innerWidth - width - 12));
+  const y = Math.max(12, Math.min(top, window.innerHeight - height - 12));
+  // Keep the existing height limit while moving upward, so a long card does not
+  // grow to fill the screen and become impossible to drag back down.
+  const previousMaxHeight = Number.parseFloat(host.style.maxHeight) || window.innerHeight - 24;
+  const maxHeight = Math.min(previousMaxHeight, Math.max(0, window.innerHeight - y - 12));
+  host.style.left = `${x}px`; host.style.top = `${y}px`;
+  host.style.maxHeight = `${maxHeight}px`;
+  host.style.setProperty('--card-max-height', `${maxHeight}px`);
 }
 
 function addStyle(root: ShadowRoot): void {
   const style = document.createElement('style');
   style.textContent = `
     :host { color:#172b3a; font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
-    * { box-sizing:border-box; } .card { background:#fff; border:1px solid #d9e5e8; border-radius:12px; box-shadow:0 10px 30px rgba(22,48,65,.18); max-height:100%; overflow:auto; }
-    .head { display:flex; gap:10px; align-items:flex-start; padding:14px 14px 11px; border-top:3px solid #0d6f78; } h2 { margin:0; flex:1; min-width:0; overflow-wrap:anywhere; color:#102a43; font-size:15px; line-height:1.4; font-weight:650; } button { border:1px solid #c5d6da; border-radius:7px; background:#fff; color:#174e5a; cursor:pointer; font:inherit; padding:5px 8px; } button:hover { background:#eff7f7; } button:focus-visible,a:focus-visible { outline:2px solid #1596a6; outline-offset:2px; }
-    .actions { display:flex; flex-shrink:0; gap:5px; } .body { padding:0 14px 14px; } .meta { color:#516773; margin:0 0 9px; } .translated { color:#0d5863; margin:0 0 10px; font-size:14px; font-weight:600; } .section { border-top:1px solid #e5edef; padding-top:10px; margin-top:10px; } .label { display:block; color:#42616b; font-size:11px; font-weight:650; letter-spacing:.02em; margin-bottom:3px; } .status { color:#42616b; margin:0; } .warning { color:#805b16; background:#fff8e8; border-radius:6px; padding:7px 8px; margin:8px 0; } .sources { color:#617883; font-size:11px; margin:10px 0 0; } .source-link { color:#0d6672; } details { margin-top:8px; } summary { color:#235764; cursor:pointer; } .candidate { display:block; width:100%; text-align:left; margin:6px 0; padding:8px; } .candidate small { display:block; color:#59707b; margin-top:2px; } .footer { display:flex; align-items:center; gap:7px; margin-top:11px; flex-wrap:wrap; } .original { color:#0d6672; text-decoration:none; } .failure { color:#a33b30; } @media (max-width:480px) { .head { padding:12px; } .body { padding:0 12px 12px; } }
+    * { box-sizing:border-box; } .card { display:flex; flex-direction:column; background:#fff; border:1px solid #d9e5e8; border-radius:12px; box-shadow:0 10px 30px rgba(22,48,65,.18); max-height:var(--card-max-height,calc(100vh - 24px)); overflow:hidden; }
+    .head { display:flex; flex-shrink:0; gap:10px; align-items:flex-start; padding:14px 14px 11px; border-top:3px solid #0d6f78; cursor:grab; touch-action:none; user-select:none; } :host([data-dragging]) .head { cursor:grabbing; } .title-group { flex:1; min-width:0; } .drag-hint { display:block; color:#627d86; font-size:10px; margin-top:5px; } h2 { margin:0; min-width:0; max-height:6em; overflow:auto; overflow-wrap:anywhere; color:#102a43; font-size:15px; line-height:1.4; font-weight:650; } button { border:1px solid #c5d6da; border-radius:7px; background:#fff; color:#174e5a; cursor:pointer; font:inherit; padding:5px 8px; } button:hover { background:#eff7f7; } button:disabled { cursor:wait; opacity:.7; } button:focus-visible,a:focus-visible,.body:focus-visible { outline:2px solid #1596a6; outline-offset:-2px; }
+    .actions { display:flex; flex-shrink:0; gap:5px; } .body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; overflow-wrap:anywhere; padding:0 14px 14px; } .meta { color:#516773; margin:0 0 9px; } .translated { color:#0d5863; margin:0 0 10px; font-size:14px; font-weight:600; } .section { border-top:1px solid #e5edef; padding-top:10px; margin-top:10px; } .label { display:block; color:#42616b; font-size:11px; font-weight:650; letter-spacing:.02em; margin-bottom:3px; } .status { color:#42616b; margin:0 0 9px; overflow-wrap:anywhere; } .warning { color:#805b16; background:#fff8e8; border-radius:6px; padding:7px 8px; margin:8px 0; } .sources { color:#617883; font-size:11px; margin:10px 0 0; } .source-link { color:#0d6672; } details { margin-top:8px; } summary { color:#235764; cursor:pointer; } .candidate { display:block; width:100%; text-align:left; margin:6px 0; padding:8px; } .candidate small { display:block; color:#59707b; margin-top:2px; } .footer { flex-shrink:0; padding:10px 14px 12px; border-top:1px solid #e5edef; background:#f8fbfc; } .footer-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; } .original { color:#0d6672; text-decoration:none; } .failure { color:#a33b30; } @media (max-width:480px) { .head { padding:12px; } .body { padding:0 12px 12px; } }
   `;
   root.append(style);
 }
@@ -186,6 +203,7 @@ export function startContentScript(): () => void {
   let hoverTimer: number | undefined;
   let closeTimer: number | undefined;
   let suppressFocusTarget: Element | undefined;
+  let drag: { pointerId: number; x: number; y: number; left: number; top: number; moved: boolean } | undefined;
   const failedGenerationAttempts = new Set<string>();
   let preferences: SettingsView = { uiLanguage: 'zh-CN', outputLanguage: 'zh-CN', baseUrl: '', model: '', autoGenerate: false, consent: false, rememberKey: false, hasApiKey: false, hasOpenAlexKey: false };
   let configRevision = 0;
@@ -195,9 +213,15 @@ export function startContentScript(): () => void {
   const label = (key: ContentMessageKey) => contentText(key, preferences.uiLanguage, preferences.outputLanguage);
 
   const current = (expected: number) => active?.token === expected && host.isConnected;
+  const finishDrag = () => {
+    if (drag) { try { host.releasePointerCapture?.(drag.pointerId); } catch { /* Pointer already released. */ } }
+    drag = undefined;
+    delete host.dataset.dragging;
+  };
   const close = (restoreFocus = false) => {
     const prior = active;
     active = undefined;
+    finishDrag();
     token += 1;
     if (hoverTimer) window.clearTimeout(hoverTimer);
     if (closeTimer) window.clearTimeout(closeTimer);
@@ -215,11 +239,14 @@ export function startContentScript(): () => void {
     if (notice) active.notice = { key: notice, failure, detail };
     host.lang = preferences.uiLanguage;
     const previousDetailsOpen = root.querySelector<HTMLDetailsElement>('details')?.open ?? false;
+    const previousScrollTop = root.querySelector<HTMLElement>('.body')?.scrollTop ?? 0;
     const activeElement = root.activeElement;
     const focused: CardFocus | undefined = activeElement instanceof HTMLButtonElement && activeElement.dataset.action
       ? { kind: 'button', action: activeElement.dataset.action, candidateId: activeElement.dataset.candidateId }
       : activeElement instanceof HTMLElement && activeElement.tagName === 'SUMMARY'
         ? { kind: 'summary' }
+        : activeElement instanceof HTMLElement && activeElement.classList.contains('body')
+          ? { kind: 'body' }
         : activeElement instanceof HTMLAnchorElement
           ? { kind: 'link', href: activeElement.href, className: activeElement.className }
           : undefined;
@@ -230,17 +257,21 @@ export function startContentScript(): () => void {
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-modal', 'false');
     card.setAttribute('aria-labelledby', 'scholar-hover-heading');
+    card.setAttribute('aria-busy', String(!!active.generationPending));
     const head = document.createElement('div'); head.className = 'head';
+    head.title = label('dragHint');
     const heading = document.createElement('h2'); heading.id = 'scholar-hover-heading'; heading.textContent = active.paper?.title || active.seed.title;
-    head.append(heading);
+    const titleGroup = document.createElement('div'); titleGroup.className = 'title-group';
+    titleGroup.append(heading); text(titleGroup, label('dragHint'), 'drag-hint'); head.append(titleGroup);
     const actions = document.createElement('div'); actions.className = 'actions';
     actions.append(cardButton(label(active.pinned ? 'unpin' : 'pin'), 'pin', active.pinned), cardButton(label('close'), 'close'));
     head.append(actions); card.append(head);
-    const body = document.createElement('div'); body.className = 'body';
+    const body = document.createElement('div'); body.className = 'body'; body.tabIndex = 0;
+    body.setAttribute('aria-label', label('contents'));
     const metadata = [(active.paper?.authors ?? active.seed.authors).join(', '), active.paper?.year ?? active.seed.year ? String(active.paper?.year ?? active.seed.year) : '', active.paper?.venue ?? active.seed.venue ?? ''].filter(Boolean).join(' · ');
     if (metadata) { const p = document.createElement('p'); p.className = 'meta'; p.textContent = metadata; body.append(p); }
     if (active.generated?.titleTranslated) { const p = document.createElement('p'); p.className = 'translated'; p.lang = active.generated.language; p.textContent = active.generated.titleTranslated; body.append(p); }
-    const status = document.createElement('p'); status.className = `status${active.notice?.failure ? ' failure' : ''}`; status.setAttribute('role', 'status'); status.textContent = active.notice?.detail ? localizeError(active.notice.detail, preferences.uiLanguage) : label(active.notice?.key ?? (active.paper ? 'matched' : 'resolving')); body.append(status);
+    const status = document.createElement('p'); status.className = `status${active.notice?.failure ? ' failure' : ''}`; status.setAttribute('role', 'status'); status.textContent = active.generationPending ? label('generating') : active.notice?.detail ? localizeError(active.notice.detail, preferences.uiLanguage) : label(active.notice?.key ?? (active.paper ? 'matched' : 'resolving'));
     if (active.resolution?.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = localizeError(active.resolution.warning, preferences.uiLanguage); body.append(warning); }
     if (active.resolution?.candidates.length && active.paper?.matchStatus === 'unresolved') {
       const section = document.createElement('div'); section.className = 'section';
@@ -267,24 +298,34 @@ export function startContentScript(): () => void {
       appendSource(body, active.paper, label, active.generated);
     }
     const footer = document.createElement('div'); footer.className = 'footer';
-    if (active.seed.url && isSafeUrl(active.seed.url)) { const original = document.createElement('a'); original.className = 'original'; original.href = active.seed.url; original.target = '_blank'; original.rel = 'noopener noreferrer'; original.textContent = label('openOriginal'); footer.append(original); }
-    if (active.paper) footer.append(cardButton(label('copy'), 'copy'));
-    if (active.paper && !active.generated) footer.append(cardButton(label('generate'), 'generate'));
-    if (!active.generated) footer.append(cardButton(label('settings'), 'settings'));
-    body.append(footer); card.append(body); root.append(card);
+    footer.append(status);
+    const footerActions = document.createElement('div'); footerActions.className = 'footer-actions';
+    if (active.seed.url && isSafeUrl(active.seed.url)) { const original = document.createElement('a'); original.className = 'original'; original.href = active.seed.url; original.target = '_blank'; original.rel = 'noopener noreferrer'; original.textContent = label('openOriginal'); footerActions.append(original); }
+    if (active.paper) footerActions.append(cardButton(label('copy'), 'copy'));
+    if (active.paper && !active.generated) {
+      const generating = !!active.generationPending;
+      const generate = cardButton(label(generating ? 'generating' : active.notice?.failure ? 'retryGenerate' : 'generate'), 'generate');
+      generate.disabled = generating; footerActions.append(generate);
+    }
+    footerActions.append(cardButton(label('settings'), 'settings'));
+    footer.append(footerActions); card.append(body, footer); root.append(card);
     host.dataset.paperId = active.paper?.id ?? '';
     const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button[data-action]'));
     const details = root.querySelector<HTMLDetailsElement>('details');
     if (details && previousDetailsOpen) details.open = true;
+    body.scrollTop = previousScrollTop;
     if (focused) {
       const restored = focused.kind === 'button'
-        ? buttons.find(button => button.dataset.action === focused.action && button.dataset.candidateId === focused.candidateId)
+        ? buttons.find(button => !button.disabled && button.dataset.action === focused.action && button.dataset.candidateId === focused.candidateId)
           ?? (focused.action === 'confirm' ? buttons.find(button => button.dataset.action === 'confirm') : undefined)
         : focused.kind === 'summary'
           ? root.querySelector<HTMLElement>('details > summary')
+          : focused.kind === 'body' ? body
           : Array.from(root.querySelectorAll<HTMLAnchorElement>('a')).find(link => link.href === focused.href && link.className === focused.className);
       (restored ?? buttons.find(button => button.dataset.action === 'close'))?.focus();
     } else if (active.focusPending) { active.focusPending = false; buttons.find(button => button.dataset.action === 'close')?.focus(); }
+    // Keyboard focus restoration can scroll an ancestor; retain the reading position.
+    body.scrollTop = previousScrollTop;
   };
 
   const generationCurrent = (expected: number, paper: Paper, revision: number) => current(expected) && active?.paper?.id === paper.id && configRevision === revision;
@@ -298,12 +339,14 @@ export function startContentScript(): () => void {
     try {
       const generated = await rpc<Generated>({ type: 'GENERATE', paperId: paper.id, ...(force ? { force: true } : {}) });
       if (!generationCurrent(expected, paper, revision) || !active) return;
+      active.generationPending = undefined;
       if (generated.language !== preferences.outputLanguage) { render('outputChanged', true); settingsReady = refreshSettings(); return; }
       failedGenerationAttempts.delete(attempt);
       active.generated = generated;
       render('generated');
     } catch (error) {
       if (!generationCurrent(expected, paper, revision)) return;
+      active!.generationPending = undefined;
       failedGenerationAttempts.add(attempt);
       render('generationFailed', true, error instanceof Error ? error.message : undefined);
     } finally {
@@ -335,6 +378,7 @@ export function startContentScript(): () => void {
       const settings = await rpc<SettingsView>({ type: 'GET_SETTINGS' });
       if (stopped || read !== settingsRead) return;
       const next = { ...settings, uiLanguage: language(settings.uiLanguage), outputLanguage: language(settings.outputLanguage) };
+      const uiChanged = next.uiLanguage !== preferences.uiLanguage;
       const outputChanged = next.outputLanguage !== preferences.outputLanguage || next.baseUrl !== preferences.baseUrl || next.model !== preferences.model;
       preferences = next;
       if (outputChanged) configRevision += 1;
@@ -346,7 +390,7 @@ export function startContentScript(): () => void {
         active.outputPending = undefined;
         render(active.paper?.matchStatus === 'unresolved' ? 'uncertain' : active.paper ? 'matched' : 'resolving');
         if (active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(active.token, active.paper, resumeGeneration);
-      } else render();
+      } else if (uiChanged) render();
     } catch { /* Keep the last known language if settings cannot be read. */ }
   };
 
@@ -380,7 +424,7 @@ export function startContentScript(): () => void {
     hoverTimer = window.setTimeout(() => open(element, keyboard), HOVER_DELAY);
   };
   const scheduleClose = (related: EventTarget | null) => {
-    if (active?.pinned || (related instanceof Node && (active?.element.contains(related) || host.contains(related)))) return;
+    if (drag || active?.pinned || (related instanceof Node && (active?.element.contains(related) || host.contains(related)))) return;
     if (closeTimer) window.clearTimeout(closeTimer);
     closeTimer = window.setTimeout(() => close(), CLOSE_DELAY);
   };
@@ -398,7 +442,11 @@ export function startContentScript(): () => void {
     if (button.dataset.action === 'close') { close(true); return; }
     if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); return; }
     if (button.dataset.action === 'settings') { void rpc<void>({ type: 'OPEN_SETTINGS' }).catch(() => render('settingsFailed', true)); return; }
-    if (button.dataset.action === 'generate' && active.paper) { void showGeneration(expected, active.paper, true); return; }
+    if (button.dataset.action === 'generate' && active.paper) {
+      active.pinned = true;
+      if (closeTimer) window.clearTimeout(closeTimer);
+      void showGeneration(expected, active.paper, true); return;
+    }
     if (button.dataset.action === 'copy' && active.paper) {
       const payload = [active.generated?.titleTranslated || active.paper.title, active.seed.authors.join(', '), active.seed.year ? String(active.seed.year) : '', active.seed.url].filter(Boolean).join('\n');
       if (!navigator.clipboard?.writeText) { render('copyUnavailable', true); return; }
@@ -414,14 +462,45 @@ export function startContentScript(): () => void {
       }).catch(error => current(expected) && render('confirmFailed', true, error instanceof Error ? error.message : undefined));
     }
   };
+  const onDragStart = (event: PointerEvent) => {
+    const target = event.target;
+    if (!active || event.button !== 0 || !(target instanceof Element) || !target.closest('.head') || target.closest('button,a,input,select,textarea')) return;
+    const rect = host.getBoundingClientRect();
+    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
+    if (hoverTimer) window.clearTimeout(hoverTimer);
+    if (closeTimer) window.clearTimeout(closeTimer);
+    try { host.setPointerCapture?.(event.pointerId); } catch { /* Synthetic pointer events do not support capture. */ }
+    event.preventDefault();
+  };
+  const onDragMove = (event: PointerEvent) => {
+    if (!drag || !active || event.pointerId !== drag.pointerId) return;
+    const dx = event.clientX - drag.x; const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+    drag.moved = true; active.pinned = true; host.dataset.dragging = 'true';
+    const pin = root.querySelector<HTMLButtonElement>('[data-action="pin"]');
+    if (pin) { pin.textContent = label('unpin'); pin.setAttribute('aria-pressed', 'true'); }
+    moveWithinViewport(host, drag.left + dx, drag.top + dy);
+    event.preventDefault();
+  };
+  const onDragEnd = (event: PointerEvent) => { if (drag?.pointerId === event.pointerId) finishDrag(); };
+  const onResize = () => {
+    if (!active) return;
+    const rect = host.getBoundingClientRect();
+    moveWithinViewport(host, rect.left, rect.top);
+  };
   const onWindowFocus = () => { settingsReady = refreshSettings(); };
   settingsReady = refreshSettings();
   window.addEventListener('focus', onWindowFocus);
+  window.addEventListener('resize', onResize);
+  root.addEventListener('pointerdown', onDragStart as EventListener);
+  document.addEventListener('pointermove', onDragMove, true);
+  document.addEventListener('pointerup', onDragEnd, true);
+  document.addEventListener('pointercancel', onDragEnd, true);
   document.addEventListener('mouseover', onOver, true); document.addEventListener('mouseout', onOut, true); document.addEventListener('focusin', onFocus, true); document.addEventListener('keydown', onKey, true); document.addEventListener('pointerdown', onPointerDown, true);
   host.addEventListener('mouseover', onHostOver); host.addEventListener('mouseout', onHostOut); root.addEventListener('click', onCardClick);
   const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); host.remove(); };
+  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onDragMove, true); document.removeEventListener('pointerup', onDragEnd, true); document.removeEventListener('pointercancel', onDragEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); host.remove(); };
 }
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.id && typeof document !== 'undefined') startContentScript();
