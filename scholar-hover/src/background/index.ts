@@ -1,7 +1,8 @@
 import { createRouter } from './router';
 import { initializeStorage, readSettings, readCredentials, saveSettings, clearKeys } from './settings';
 import { getCached, putCached, clearCache } from './cache';
-import { generatePaper, makeFingerprint, testConnection } from './model';
+import { makeFingerprint, testConnection } from './model';
+import { generatePaperOffscreen } from './long-model';
 import { resolvePaper } from './metadata';
 import { createCollectionStore } from './collection';
 import { createExportManager } from './downloads';
@@ -35,7 +36,7 @@ const route = createRouter({
   setSession: async (key, value) => { await chrome.storage.session.set({ [key]: value }); },
   readSettings, readCredentials, saveSettings, clearKeys, getCached, putCached, clearCache,
   resolvePaper, fingerprint: makeFingerprint,
-  generate: (paper, settings, apiKey) => timeModel(() => generatePaper(paper, settings, apiKey)),
+  generate: (paper, settings, apiKey) => timeModel(() => generatePaperOffscreen(paper, settings, apiKey)),
   testConnection: (settings, apiKey) => timeModel(() => testConnection(settings, apiKey)),
   hasPermission: async origin => chrome.permissions.contains({ origins: [origin] }),
   openSettings: async () => { await chrome.runtime.openOptionsPage(); },
@@ -43,6 +44,11 @@ const route = createRouter({
   collection, exports,
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === 'scholar-hover-offscreen') return false;
+  if (message?.target === 'scholar-hover-background' && message?.type === 'MODEL_HEARTBEAT') {
+    if (sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('offscreen.html') && !sender.tab) sendResponse({ ok: true });
+    return false;
+  }
   void ready.then(() => route(message, sender)).then(sendResponse).catch(() => sendResponse({ ok: false, error: '扩展存储初始化失败，请重新加载扩展。' }));
   return true;
 });

@@ -1,6 +1,6 @@
 # Scholar Hover · Datenschutzhinweise
 
-Version 0.3.0 · 2026-09-16
+Version 0.3.1 · 2026-09-16
 
 [简体中文](privacy.md) · [English](privacy.en.md) · [Français](privacy.fr.md)
 
@@ -23,7 +23,7 @@ Publikationsdaten und generierte Ergebnisse werden ausschließlich lokal zwische
 
 ## Berechtigungen und Kontrolle
 
-Die Erweiterung läuft ausschließlich auf Scholar-Suchseiten für Publikationen. Die Berechtigungen für OpenAlex und Crossref dienen dem Metadatenzugriff. Der Zugriff auf eine benutzerdefinierte Modelldomain wird beim Speichern der Konfiguration gesondert angefordert. Der optionale HTTPS-Domainbereich im Manifest ermöglicht benutzerdefinierte Adressen; bei der Installation wird kein Zugriff auf sämtliche Websites gewährt.
+Die Erweiterung läuft ausschließlich auf Scholar-Suchseiten für Publikationen. Die Berechtigungen für OpenAlex und Crossref dienen dem Metadatenzugriff. Der Zugriff auf eine benutzerdefinierte Modelldomain wird beim Speichern der Konfiguration gesondert angefordert. Der optionale HTTPS-Domainbereich im Manifest ermöglicht benutzerdefinierte Adressen; bei der Installation wird kein Zugriff auf sämtliche Websites gewährt. Die Berechtigung `offscreen` ermöglicht einer ausgeblendeten, erweiterungseigenen Seite und einem dedizierten Worker, auf langsamere Modellantworten zu warten. Diese Seite liest keine Website-Inhalte; der Modellschlüssel wird weiterhin ausschließlich an den konfigurierten Modelldienst gesendet.
 
 Diese Version enthält keine Werbung, keine automatische Telemetrie und keine Hintergrundübertragung von Nutzungsaufzeichnungen. Testdiagnosen werden lokal gespeichert; prüfen Sie deren Inhalt vor einer Weitergabe. Modellausgaben können fehlerhaft sein. Abstractübersetzungen und Zusammenfassungen kennzeichnen ihre Quellengrundlage und ersetzen weder Schlussfolgerungen aus dem vollständigen Text noch eine Qualitätsbewertung der Publikation. Tests auf echten Seiten und menschliche Prüfungen, einschließlich der Prüfung durch Muttersprachler aller vier Sprachen, sind noch nicht abgeschlossen.
 

@@ -10,7 +10,7 @@ function jsonResponse(content: string, status = 200): Response {
   return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status, headers: { 'content-type': 'application/json' } });
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('model generation', () => {
   it('posts only a non-streaming chat completion to the versioned base URL', async () => {
@@ -143,7 +143,40 @@ describe('model generation', () => {
     await expect(generatePaper(paper, settings, 'test-key')).rejects.toThrow('模型返回格式无效');
   });
 
-  it('uses a 25 second abort timeout', async () => {
+  it('allows a response body to complete after 40 seconds without retrying', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('crypto', { subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer) } });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: '{"titleTranslated":"中文题目","abstractTranslated":"完整摘要","summary":"保留完整结论。"}' } }] })));
+          controller.close();
+        }, 40_000);
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = expect(generatePaper(paper, settings, 'test-key')).resolves.toMatchObject({ abstractTranslated: '完整摘要' });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await result;
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('allows a non-streaming model response to begin after 40 seconds', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('crypto', { subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer) } });
+    const fetchMock = vi.fn((_url: string, options: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(jsonResponse('{"titleTranslated":"中文题目","abstractTranslated":"完整摘要","summary":"保留完整结论。"}')), 40_000);
+      options.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = generatePaper(paper, settings, 'test-key');
+    await vi.advanceTimersByTimeAsync(40_000);
+    await expect(result).resolves.toMatchObject({ abstractTranslated: '完整摘要' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('bounds generation response waiting at 90 seconds', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('crypto', { subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer) } });
     const fetchMock = vi.fn((_url: string, options: RequestInit) => new Promise((_, reject) => options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))));
@@ -151,13 +184,13 @@ describe('model generation', () => {
     const promise = generatePaper(paper, settings, 'test-key');
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledOnce();
-    const rejected = expect(promise).rejects.toThrow('请求超时');
-    await vi.advanceTimersByTimeAsync(25_000);
-    await rejected;
+    const observed = promise.catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(90_000);
+    await expect(observed).resolves.toMatchObject({ message: '模型在 90 秒内未开始返回结果，请手动重试或检查模型服务。' });
     vi.useRealTimers();
   });
 
-  it('keeps the 25 second timeout while a response body stalls after headers', async () => {
+  it('bounds a stalled response body to 90 seconds and identifies an incomplete response', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('crypto', { subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer) } });
     const stalled = new ReadableStream<Uint8Array>({ start() {} });
@@ -166,10 +199,20 @@ describe('model generation', () => {
     const promise = generatePaper(paper, settings, 'test-key');
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledOnce();
-    const rejected = expect(promise).rejects.toThrow('请求超时');
-    await vi.advanceTimersByTimeAsync(25_000);
-    await rejected;
+    const observed = promise.catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(90_000);
+    await expect(observed).resolves.toMatchObject({ message: '模型已响应，但 90 秒内未返回完整结果，请手动重试。' });
     vi.useRealTimers();
+  });
+
+  it('retains the 25 second limit for the short connection test', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, options: RequestInit) => new Promise((_, reject) => options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = testConnection(settings, 'test-key').catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(25_000);
+    await expect(result).resolves.toMatchObject({ message: '请求超时，请稍后重试' });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('rejects an oversized response body before parsing it', async () => {

@@ -1,6 +1,8 @@
 import { chromium } from 'playwright';
 import { mkdir, mkdtemp, writeFile, readFile, access, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as createSecureServer } from 'node:https';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -14,6 +16,46 @@ await mkdir(path.join(profile, 'Default'));
 await writeFile(path.join(profile, 'Default', 'Preferences'), JSON.stringify({
   download: { default_directory: downloads, prompt_for_download: false, directory_upgrade: true },
 }));
+const certificatePath = path.join(profile, 'model-cert.pem');
+const privateKeyPath = path.join(profile, 'model-key.pem');
+execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', privateKeyPath, '-out', certificatePath,
+  '-subj', '/CN=api.openalex.org', '-days', '1', '-addext', 'subjectAltName=DNS:api.openalex.org'], { stdio: 'ignore' });
+const modelRequests = [];
+const slowModelDelayMs = Number(process.env.SCHOLAR_HOVER_SLOW_MODEL_MS ?? 31_000);
+let modelFixture = { hold: false, fail: false, delayMs: 0 };
+const heldModelRequests = [];
+const modelResponse = body => {
+  const prompt = JSON.stringify(body);
+  const language = prompt.includes('Write all translated output in French') ? 'fr' : prompt.includes('Write all translated output in German') ? 'de' : prompt.includes('Write all translated output in English') ? 'en' : 'zh-CN';
+  const text = {
+    'zh-CN': { titleTranslated: '测量中的证据与不确定性', abstractTranslated: '在 120 个样本中，未观察到显著增加。', summary: '该研究在 120 个样本中未发现显著增加。' },
+    en: { titleTranslated: 'Evidence and uncertainty in measurement', abstractTranslated: 'In 120 samples, no significant increase was observed.', summary: 'The study found no significant increase in 120 samples.' },
+    fr: { titleTranslated: 'Preuves et incertitude dans la mesure', abstractTranslated: 'Dans 120 échantillons, aucune augmentation significative n’a été observée.', summary: 'L’étude n’a constaté aucune augmentation significative dans 120 échantillons.' },
+    de: { titleTranslated: 'Belege und Unsicherheit bei der Messung', abstractTranslated: 'Bei 120 Stichproben wurde kein signifikanter Anstieg beobachtet.', summary: 'Die Studie fand bei 120 Stichproben keinen signifikanten Anstieg.' },
+  };
+  const output = prompt.includes('Long abstract measurement study')
+    ? { titleTranslated: 'Long abstract translated result', abstractTranslated: 'Across 120 samples, no significant increase was observed; uncertainty remained substantial. '.repeat(55) + 'TRANSLATION_END', summary: 'The study found no significant increase in 120 samples despite substantial uncertainty.' }
+    : text[language];
+  return JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] });
+};
+const modelServer = createSecureServer({ key: await readFile(privateKeyPath), cert: await readFile(certificatePath) }, (request, response) => {
+  let raw = '';
+  request.setEncoding('utf8');
+  request.on('data', chunk => { raw += chunk; });
+  request.on('end', () => { void (async () => {
+    const body = JSON.parse(raw);
+    modelRequests.push({ host: 'api.openalex.org', path: request.url, body });
+    const fixture = { ...modelFixture };
+    modelFixture.delayMs = 0;
+    if (fixture.hold) await new Promise(resolve => heldModelRequests.push(resolve));
+    if (fixture.delayMs) await new Promise(resolve => setTimeout(resolve, fixture.delayMs));
+    response.writeHead(fixture.fail ? 500 : 200, { 'Content-Type': 'application/json' });
+    response.end(fixture.fail ? '{}' : modelResponse(body));
+  })().catch(() => { response.writeHead(500); response.end('{}'); }); });
+});
+await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+modelServer.unref();
+const modelOrigin = `https://api.openalex.org:${modelServer.address().port}`;
 let authorizedPdf = false;
 const fixturePdf = (() => {
   const stream = 'BT /F1 18 Tf 50 740 Td (Offline Scholar Hover PDF fixture) Tj ET';
@@ -42,8 +84,8 @@ const fixtureOrigin = `http://127.0.0.1:${server.address().port}`;
 const extension = path.resolve('dist');
 const context = await chromium.launchPersistentContext(profile, {
   channel: 'chromium', headless: true, viewport: { width: 1280, height: 900 },
-  acceptDownloads: true, downloadsPath: downloads,
-  args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
+  acceptDownloads: true, downloadsPath: downloads, ignoreHTTPSErrors: true,
+  args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--host-resolver-rules=MAP api.openalex.org 127.0.0.1', '--ignore-certificate-errors'],
 });
 const checks = [];
 const check = (name, condition) => { assert.ok(condition, name); checks.push(name); };
@@ -65,11 +107,11 @@ try {
   await worker.evaluate(fixtureOrigin => {
     globalThis.__requests = [];
     globalThis.__modelFixture = { hold: false, fail: false };
-    chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://model.test/*') ?? false;
+    chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://model.test/*' || origin.startsWith('https://api.openalex.org')) ?? false;
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(String(input));
       globalThis.__requests.push({ host: url.host, path: url.pathname, body: init.body ? JSON.parse(init.body) : null });
-      if (url.host === 'model.test') {
+      if (url.host === 'model.test' || (url.hostname === 'api.openalex.org' && url.pathname.startsWith('/model-fixture/'))) {
         const fixture = { ...globalThis.__modelFixture };
         if (fixture.hold) await new Promise(resolve => { globalThis.__releaseModel = resolve; });
         if (fixture.fail) return new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
@@ -129,8 +171,8 @@ try {
   await options.goto(`chrome-extension://${id}/options.html`);
   await options.locator('#status').filter({ hasText: '配置已读取' }).waitFor();
   check('session key is default', !await options.locator('#remember-key').isChecked());
-  await options.evaluate(() => { chrome.permissions.request = async ({ origins }) => origins.length === 1 && origins[0] === 'https://model.test/*'; });
-  await options.locator('#base-url').fill('https://model.test/v1');
+  await options.evaluate(() => { chrome.permissions.request = async ({ origins }) => origins.length === 1 && (origins[0] === 'https://model.test/*' || origins[0].startsWith('https://api.openalex.org')); });
+  await options.locator('#base-url').fill(`${modelOrigin}/model-fixture/v1`);
   await options.locator('#model').fill('fixture-model');
   await options.locator('#api-key').fill('TEST_ONLY_SECRET_NOT_REAL');
   await options.locator('#consent').check();
@@ -154,9 +196,22 @@ try {
   await first.hover();
   await page.mouse.move(0, 0);
   await page.waitForTimeout(650);
-  check('quick hover does not request metadata', !(await worker.evaluate(() => globalThis.__requests)).some(r => r.host === 'api.openalex.org'));
+  check('quick hover does not request metadata', !(await worker.evaluate(() => globalThis.__requests)).some(r => r.host === 'api.openalex.org' && !r.path.startsWith('/model-fixture/')));
+  modelFixture.delayMs = slowModelDelayMs;
+  const slowGenerationStarted = Date.now();
   await first.hover();
-  await host.getByText('中文信息已生成。', { exact: true }).waitFor();
+  try { await host.getByText('中文信息已生成。', { exact: true }).waitFor({ timeout: 45_000 }); }
+  catch (error) {
+    const diagnostics = {
+      card: await host.locator('section').textContent().catch(() => ''),
+      status: await host.locator('.status').first().textContent().catch(() => ''),
+      contexts: await worker.evaluate(async () => (await chrome.runtime.getContexts({})).map(context => ({ type: context.contextType, url: context.documentUrl }))),
+      modelRequestCount: modelRequests.length,
+      workerErrors,
+    };
+    throw new Error(`Slow offscreen generation failed: ${JSON.stringify(diagnostics)}`, { cause: error });
+  }
+  check('offscreen worker completes after more than the service-worker response limit', slowModelDelayMs < 30_000 || Date.now() - slowGenerationStarted >= 30_000);
   check('original title retained', await host.getByRole('heading').textContent() === 'Evidence and uncertainty in measurement');
   check('Chinese title visible', await host.getByText('测量中的证据与不确定性', { exact: true }).count() === 1);
   check('abstract-based summary labelled', (await host.textContent()).includes('基于论文摘要') || (await host.locator('section').textContent()).includes('基于论文摘要'));
@@ -167,14 +222,14 @@ try {
   await page.screenshot({ path: path.join(results, 'hover-card.png'), fullPage: true });
   await page.keyboard.press('Escape');
   await host.waitFor({ state: 'hidden' });
-  const before = (await worker.evaluate(() => globalThis.__requests)).filter(r => r.host === 'model.test').length;
+  const before = modelRequests.length;
   await first.hover();
   await host.getByText('已读取本地缓存。', { exact: true }).waitFor();
-  check('repeat hover reuses generated cache', (await worker.evaluate(() => globalThis.__requests)).filter(r => r.host === 'model.test').length === before);
+  check('repeat hover reuses generated cache', modelRequests.length === before);
   await page.keyboard.press('Escape');
   await page.locator('.gs_rt a').nth(1).hover();
   await host.getByText('请选择匹配条目').waitFor();
-  check('ambiguous result not auto-generated', (await worker.evaluate(() => globalThis.__requests)).filter(r => r.host === 'model.test').length === before);
+  check('ambiguous result not auto-generated', modelRequests.length === before);
   await host.locator('[data-action="confirm"]').first().click();
   await host.locator('summary').waitFor();
   check('confirmed candidate retains real abstract', (await host.locator('details').textContent()).includes('120 samples'));
@@ -202,7 +257,7 @@ try {
   const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1];
   check('collected 20 cached first-frame samples', sorted.length === 20);
   check('cached first-frame p95 <= 150 ms after dwell', p95 <= 150);
-  const generations = async () => (await worker.evaluate(() => globalThis.__requests)).filter(r => r.host === 'model.test').length;
+  const generations = async () => modelRequests.length;
   const setLanguages = async (uiLanguage, outputLanguage) => {
     await options.bringToFront();
     await options.locator('#ui-language').selectOption(uiLanguage);
@@ -302,8 +357,9 @@ try {
   };
   const releaseModel = async () => {
     for (let attempt = 0; attempt < 50; attempt++) {
-      if (await worker.evaluate(() => typeof globalThis.__releaseModel === 'function')) {
-        await worker.evaluate(() => { globalThis.__releaseModel(); delete globalThis.__releaseModel; globalThis.__modelFixture.hold = false; });
+      if (heldModelRequests.length) {
+        heldModelRequests.shift()();
+        modelFixture.hold = false;
         return;
       }
       await page.waitForTimeout(100);
@@ -350,7 +406,7 @@ try {
   check('manual generate action remains reachable below a long abstract', await visibleWithinCard(host.locator('[data-action="generate"]')));
   const beforeGeneratePosition = await cardBounds();
   const beforeGenerateScroll = await body.evaluate(element => element.scrollTop);
-  await worker.evaluate(() => { globalThis.__modelFixture = { hold: true, fail: false }; });
+  modelFixture = { hold: true, fail: false, delayMs: 0 };
   await host.locator('[data-action="generate"]').click();
   await host.locator('.status').filter({ hasText: 'Generating English text…' }).waitFor();
   check('manual click immediately exposes a visible pending status', await visibleWithinCard(host.locator('.status')));
@@ -410,7 +466,7 @@ try {
   check('close button closes the resized sidebar', !await host.isVisible());
 
   await configureManualModel('fixture-manual-retry');
-  await worker.evaluate(() => { globalThis.__modelFixture = { hold: false, fail: true }; });
+  modelFixture = { hold: false, fail: true, delayMs: 0 };
   await longTitle.hover();
   await host.locator('[data-action="generate"]').waitFor();
   await host.locator('summary').click();
@@ -426,7 +482,7 @@ try {
   await host.locator('[data-action="pin"]').click();
   await page.waitForTimeout(650);
   check('failed generation does not retry after focus or pin redraws', await generations() === beforeFailure + 1);
-  await worker.evaluate(() => { globalThis.__modelFixture = { hold: true, fail: false }; });
+  modelFixture = { hold: true, fail: false, delayMs: 0 };
   await host.locator('[data-action="generate"]').click();
   await host.locator('.status').filter({ hasText: 'Generating English text…' }).waitFor();
   await releaseModel();
@@ -545,9 +601,9 @@ try {
   await manager.screenshot({ path: path.join(results, 'collection-retry-complete.png'), fullPage: true });
 
   check('no unhandled page errors', workerErrors.length === 0);
-  const requestLog = await worker.evaluate(() => globalThis.__requests);
+  const requestLog = [...await worker.evaluate(() => globalThis.__requests), ...modelRequests];
   check('no secret in page DOM', !await page.evaluate(() => document.documentElement.outerHTML.includes('TEST_ONLY_SECRET_NOT_REAL')));
-  check('requests limited to configured providers', requestLog.every(r => ['api.openalex.org', 'model.test'].includes(r.host)));
+  check('requests limited to configured providers', requestLog.every(r => r.host === 'model.test' || r.host.startsWith('api.openalex.org')));
   const timings = await worker.evaluate(async () => { const data = await chrome.storage.session.get(['lastModelTiming', 'paperRegistry']); return { model: data.lastModelTiming, metadata: data.paperRegistry?.map(e => e.resolution.timings).filter(Boolean) }; });
   check('provider round-trip diagnostics recorded locally', typeof timings.model?.durationMs === 'number' && timings.metadata.some(t => typeof t.openalex === 'number'));
   await writeFile(path.join(results, 'e2e.json'), JSON.stringify({ passed: checks, count: checks.length, timestamp: new Date().toISOString(), scope: 'Packaged MV3 extension with metadata/model and permission-boundary doubles; actual Chrome downloads from a loopback PDF/auth fixture into an isolated temporary directory. No real Scholar or paid model calls.', cachedFirstFrame: { count: sorted.length, p95Ms: p95, samplesMs: latencies }, timings, errors: workerErrors }, null, 2));
@@ -573,11 +629,12 @@ try {
         viewport: { width: innerWidth, height: innerHeight, pageScroll: scrollY }, bounds: element?.getBoundingClientRect().toJSON(),
         body: body ? { bounds: body.getBoundingClientRect().toJSON(), scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight } : undefined };
     }).catch(() => undefined);
-    await writeFile(path.join(results, 'e2e-failure.json'), JSON.stringify({ completedChecks: checks, message: String(error), card }, null, 2));
+    await writeFile(path.join(results, 'e2e-failure.json'), JSON.stringify({ completedChecks: checks, message: String(error), modelRequests, card }, null, 2));
   }
   throw error;
 } finally {
   await context.close();
   await new Promise(resolve => server.close(resolve));
+  await new Promise(resolve => modelServer.close(resolve));
   await rm(profile, { recursive: true, force: true });
 }

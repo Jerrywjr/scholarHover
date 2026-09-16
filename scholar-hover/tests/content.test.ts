@@ -535,6 +535,38 @@ describe('content interaction', () => {
     expect(host.style.display).toBe('none'); stop();
   });
 
+  it.each(['RESOLVE', 'GET_CACHED'] as const)('defers automatic generation if the title is left before %s returns, then resumes on panel entry', async (delayedType) => {
+    vi.useFakeTimers();
+    const result = paper();
+    let finishPending!: (value: unknown) => void;
+    let delayed = false;
+    const sendMessage = vi.fn((message: { type: string }) => {
+      if (message.type === 'GET_SETTINGS') return Promise.resolve({ ok: true, data: { ...settings, autoGenerate: true, consent: true, hasApiKey: true } });
+      if (message.type === delayedType && !delayed) { delayed = true; return new Promise(resolve => { finishPending = resolve; }); }
+      if (message.type === 'RESOLVE') return Promise.resolve({ ok: true, data: matched() });
+      if (message.type === 'GENERATE') return Promise.resolve({ ok: true, data: generated('zh-CN', '回到面板才生成的译文') });
+      return Promise.resolve({ ok: true, data: undefined });
+    });
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const stop = startContentScript();
+    try {
+      const heading = titleTarget(result);
+      heading.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(500); await flush();
+      expect(sendMessage.mock.calls.some(([message]) => message.type === delayedType)).toBe(true);
+      heading.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+      await vi.advanceTimersByTimeAsync(1000);
+      finishPending({ ok: true, data: delayedType === 'RESOLVE' ? matched() : undefined }); await flush();
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'GENERATE')).toHaveLength(0);
+      const host = document.getElementById('scholar-hover-card')!;
+      expect(host.style.display).toBe('block');
+      expect(cardRoot().textContent).toContain('A real abstract.');
+      host.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); await flush();
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'GENERATE')).toHaveLength(1);
+      expect(cardRoot().textContent).toContain('回到面板才生成的译文');
+    } finally { stop(); }
+  });
+
   it('does not resolve when the pointer leaves before the hover delay', async () => {
     vi.useFakeTimers();
     const result = paper();

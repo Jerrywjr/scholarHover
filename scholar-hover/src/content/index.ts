@@ -14,6 +14,8 @@ type Active = {
   seed: PaperSeed;
   token: number;
   pinned: boolean;
+  titleHovered: boolean;
+  cardHovered: boolean;
   paper?: Paper;
   resolution?: Resolution;
   generated?: Generated;
@@ -349,6 +351,10 @@ export function startContentScript(): () => void {
   };
 
   const generationCurrent = (expected: number, paper: Paper, revision: number) => current(expected) && active?.paper?.id === paper.id && configRevision === revision;
+  // Keeping the dock visible must not authorize a new model call after the
+  // reader has left the result. Cached data can still finish loading normally.
+  const interestedInActive = () => !!active && (active.pinned || active.titleHovered || active.cardHovered
+    || !!root.activeElement || resultFor(document.activeElement) === active.element);
   const showGeneration = async (expected: number, paper: Paper, force = false) => {
     const revision = configRevision;
     const attempt = JSON.stringify([paper.id, preferences.outputLanguage, preferences.baseUrl, preferences.model]);
@@ -385,11 +391,16 @@ export function startContentScript(): () => void {
       const cached = await rpc<Generated | undefined>({ type: 'GET_CACHED', paperId: paper.id });
       if (!generationCurrent(expected, paper, revision) || !active) return;
       if (cached?.language === preferences.outputLanguage) { active.generated = cached; render('cached'); return; }
-      if (preferences.hasApiKey && preferences.consent && (preferences.autoGenerate || resumeGeneration)) await showGeneration(expected, paper, resumeGeneration);
+      if (preferences.hasApiKey && preferences.consent && (resumeGeneration || preferences.autoGenerate && interestedInActive())) await showGeneration(expected, paper, resumeGeneration);
     } catch { /* The matched paper remains usable without a cache. */ }
     finally {
       if (current(expected) && active?.outputPending === pending) active.outputPending = undefined;
     }
+  };
+
+  const resumeAutomaticGeneration = () => {
+    if (active?.paper && active.paper.matchStatus !== 'unresolved' && !active.generated && !active.generationPending
+      && !active.outputPending && preferences.autoGenerate && interestedInActive()) void loadOutput(active.token, active.paper);
   };
 
   const language = (value: unknown): Language => LANGUAGES.includes(value as Language) ? value as Language : 'zh-CN';
@@ -432,10 +443,10 @@ export function startContentScript(): () => void {
   const open = (element: Element, keyboard = false) => {
     if (active?.pinned && active.element !== element) return;
     const seed = parseResult(element); if (!seed) return;
-    if (active?.element === element) return;
+    if (active?.element === element) { resumeAutomaticGeneration(); return; }
     if (hoverTimer) window.clearTimeout(hoverTimer);
     const expected = ++token;
-    active = { element, seed, token: expected, pinned: false, keyboard, focusPending: keyboard };
+    active = { element, seed, token: expected, pinned: false, titleHovered: !keyboard, cardHovered: false, keyboard, focusPending: keyboard };
     host.style.display = 'block'; positionPanel(); render();
     void enrich(expected, seed);
   };
@@ -444,10 +455,26 @@ export function startContentScript(): () => void {
     if (hoverTimer) window.clearTimeout(hoverTimer);
     hoverTimer = window.setTimeout(() => open(element, keyboard), HOVER_DELAY);
   };
-  const onOver = (event: MouseEvent) => { const element = resultFor(event.target); if (element) scheduleOpen(element); };
+  const onOver = (event: MouseEvent) => {
+    const element = resultFor(event.target);
+    if (!element) return;
+    if (active?.element === element) { active.titleHovered = true; resumeAutomaticGeneration(); }
+    else scheduleOpen(element);
+  };
   // A right-docked panel must remain reachable across the space between the
-  // result title and the page edge. Leaving a title only cancels unopened previews.
-  const onOut = (event: MouseEvent) => { if (resultFor(event.target)) { if (hoverTimer) window.clearTimeout(hoverTimer); hoverTimer = undefined; } };
+  // result title and the page edge. Leaving a title defers new automatic calls.
+  const onOut = (event: MouseEvent) => {
+    const element = resultFor(event.target);
+    if (!element || resultFor(event.relatedTarget) === element) return;
+    if (hoverTimer) window.clearTimeout(hoverTimer);
+    hoverTimer = undefined;
+    if (active?.element === element) active.titleHovered = false;
+  };
+  const onHostOver = () => { if (active && !active.cardHovered) { active.cardHovered = true; resumeAutomaticGeneration(); } };
+  const onHostOut = (event: MouseEvent) => {
+    if (active && !(event.relatedTarget instanceof Node && (host.contains(event.relatedTarget) || root.contains(event.relatedTarget)))) active.cardHovered = false;
+  };
+  const onHostFocus = () => { resumeAutomaticGeneration(); };
   const onFocus = (event: FocusEvent) => { const element = resultFor(event.target); if (element) { if (element === suppressFocusTarget) { suppressFocusTarget = undefined; return; } scheduleOpen(element, true); } };
   const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && active) { event.preventDefault(); close(true); } };
   const onPointerDown = (event: PointerEvent) => { if (active && !active.pinned && !event.composedPath().includes(host) && !active.element.contains(event.target as Node)) close(); };
@@ -455,7 +482,7 @@ export function startContentScript(): () => void {
     const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]'); if (!button || !active) return;
     const expected = active.token;
     if (button.dataset.action === 'close') { close(true); return; }
-    if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); return; }
+    if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); resumeAutomaticGeneration(); return; }
     if (button.disabled) return;
     if (button.dataset.action === 'reset-height') { panel.fullHeight = true; positionPanel(); return; }
     if (button.dataset.action === 'save' && active.paper) {
@@ -549,6 +576,7 @@ export function startContentScript(): () => void {
   document.addEventListener('pointerup', onResizeEnd, true);
   document.addEventListener('pointercancel', onResizeEnd, true);
   document.addEventListener('mouseover', onOver, true); document.addEventListener('mouseout', onOut, true); document.addEventListener('focusin', onFocus, true); document.addEventListener('keydown', onKey, true); document.addEventListener('pointerdown', onPointerDown, true);
+  host.addEventListener('mouseover', onHostOver); host.addEventListener('mouseout', onHostOut); root.addEventListener('focusin', onHostFocus);
   root.addEventListener('click', onCardClick);
   const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });

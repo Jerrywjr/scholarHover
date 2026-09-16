@@ -3,7 +3,13 @@ import { PROMPT_LANGUAGE_NAMES, type Language } from '../shared/languages';
 import type { Generated, Paper, Settings } from '../shared/types';
 import { validateBaseUrl } from './settings';
 
-const REQUEST_TIMEOUT_MS = 25_000;
+const CONNECTION_TIMEOUT_MS = 25_000;
+// Generation runs in an extension-owned dedicated worker, outside the MV3
+// service worker's 30-second fetch response limit.
+const GENERATION_RESPONSE_TIMEOUT_MS = 90_000;
+// Once response headers arrive, a complete abstract translation can take much
+// longer than the connection test. Bound that phase independently.
+const GENERATION_BODY_TIMEOUT_MS = 90_000;
 const MAX_TITLE = 1_000;
 const MAX_ABSTRACT = 12_000;
 const MAX_OUTPUT = 32_000;
@@ -89,9 +95,23 @@ async function readJsonBody(response: Response, controller: AbortController): Pr
   }
 }
 
-async function postCompletion(endpoint: string, settings: Settings, apiKey: string, messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<unknown> {
+type CompletionTimeouts = {
+  responseMs: number;
+  bodyMs: number;
+  responseMessage: string;
+  bodyMessage: string;
+};
+
+async function postCompletion(
+  endpoint: string,
+  settings: Settings,
+  apiKey: string,
+  messages: Array<{ role: 'system' | 'user'; content: string }>,
+  timeouts: CompletionTimeouts,
+): Promise<unknown> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let phase: 'response' | 'body' = 'response';
+  let timeout = setTimeout(() => controller.abort(), timeouts.responseMs);
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -101,12 +121,17 @@ async function postCompletion(endpoint: string, settings: Settings, apiKey: stri
       redirect: 'error',
       credentials: 'omit',
     });
+    clearTimeout(timeout);
+    phase = 'body';
+    timeout = setTimeout(() => controller.abort(), timeouts.bodyMs);
     if (response.status === 401) throw new Error('API Key 无效或未获授权');
     if (response.status === 429) throw new Error('请求过于频繁，请稍后重试');
     if (!response.ok) throw new Error('模型服务请求失败');
     return await readJsonBody(response, controller);
   } catch (error) {
-    if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw new Error('请求超时，请稍后重试');
+    if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      throw new Error(phase === 'response' ? timeouts.responseMessage : timeouts.bodyMessage);
+    }
     if (error instanceof Error && ['API Key 无效或未获授权', '请求过于频繁，请稍后重试', '模型服务请求失败', '模型返回内容过长', '模型返回格式无效'].includes(error.message)) throw error;
     throw new Error('无法连接模型服务，请检查地址和网络');
   } finally {
@@ -187,7 +212,12 @@ export async function generatePaper(paper: Paper, settings: Settings, apiKey: st
   const endpoint = validateRequest(settings, apiKey, true);
   validatePaperInput(paper);
   const fingerprint = await makeFingerprint(paper, settings);
-  const payload = await postCompletion(endpoint, settings, apiKey, messagesFor(paper, settings.outputLanguage));
+  const payload = await postCompletion(endpoint, settings, apiKey, messagesFor(paper, settings.outputLanguage), {
+    responseMs: GENERATION_RESPONSE_TIMEOUT_MS,
+    bodyMs: GENERATION_BODY_TIMEOUT_MS,
+    responseMessage: '模型在 90 秒内未开始返回结果，请手动重试或检查模型服务。',
+    bodyMessage: '模型已响应，但 90 秒内未返回完整结果，请手动重试。',
+  });
   const content = (payload as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('模型返回格式无效');
   return parseGenerated(content, paper, settings, fingerprint);
@@ -198,7 +228,12 @@ export async function testConnection(settings: Settings, apiKey: string): Promis
   const payload = await postCompletion(endpoint, settings, apiKey, [
     { role: 'system', content: 'Reply with a JSON object.' },
     { role: 'user', content: 'Ping.' },
-  ]);
+  ], {
+    responseMs: CONNECTION_TIMEOUT_MS,
+    bodyMs: CONNECTION_TIMEOUT_MS,
+    responseMessage: '请求超时，请稍后重试',
+    bodyMessage: '请求超时，请稍后重试',
+  });
   const content = (payload as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
   if (typeof content !== 'string' || !content.trim()) throw new Error('模型返回格式无效');
 }

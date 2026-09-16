@@ -1,6 +1,6 @@
 # Scholar Hover · Privacy notice
 
-Version 0.3.0 · 2026-09-16
+Version 0.3.1 · 2026-09-16
 
 [简体中文](privacy.md) · [Français](privacy.fr.md) · [Deutsch](privacy.de.md)
 
@@ -23,7 +23,7 @@ Paper data and generated results are cached only locally. The generation cache i
 
 ## Permissions and controls
 
-The extension runs only on Scholar paper search pages. OpenAlex and Crossref permissions allow metadata access. Access to a custom model domain is requested separately when the user saves configuration. The optional HTTPS domain range in the manifest supports user-defined addresses; installation does not grant access to every website.
+The extension runs only on Scholar paper search pages. OpenAlex and Crossref permissions allow metadata access. Access to a custom model domain is requested separately when the user saves configuration. The optional HTTPS domain range in the manifest supports user-defined addresses; installation does not grant access to every website. The `offscreen` permission lets an extension-owned hidden page and dedicated Worker wait for slower model responses. That page does not read website content, and the model key is still sent only to the configured model endpoint.
 
 This version has no ads, automatic telemetry or background uploads of usage records. Test diagnostics are stored locally; inspect them before sharing. Model output may be incorrect. Abstract translations and summaries identify their source basis and cannot substitute for conclusions from the full paper or a paper quality score. Live-page trials and human review, including native-speaker review in all four languages, remain incomplete.
 

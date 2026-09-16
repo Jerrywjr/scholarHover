@@ -1,6 +1,6 @@
 # Scholar Hover · Avis de confidentialité
 
-Version 0.3.0 · 2026-09-16
+Version 0.3.1 · 2026-09-16
 
 [简体中文](privacy.md) · [English](privacy.en.md) · [Deutsch](privacy.de.md)
 
@@ -23,7 +23,7 @@ Les données des articles et les résultats générés sont mis en cache uniquem
 
 ## Autorisations et contrôles
 
-L’extension fonctionne uniquement sur les pages de recherche d’articles de Scholar. Les autorisations OpenAlex et Crossref servent à consulter les métadonnées. L’accès au domaine d’un modèle personnalisé est demandé séparément lorsque l’utilisateur enregistre sa configuration. La plage facultative de domaines HTTPS du manifeste permet d’utiliser des adresses personnalisées ; l’installation n’accorde pas l’accès à tous les sites web.
+L’extension fonctionne uniquement sur les pages de recherche d’articles de Scholar. Les autorisations OpenAlex et Crossref servent à consulter les métadonnées. L’accès au domaine d’un modèle personnalisé est demandé séparément lorsque l’utilisateur enregistre sa configuration. La plage facultative de domaines HTTPS du manifeste permet d’utiliser des adresses personnalisées ; l’installation n’accorde pas l’accès à tous les sites web. L’autorisation `offscreen` permet à une page cachée appartenant à l’extension et à un Worker dédié d’attendre les réponses lentes du modèle. Cette page ne lit pas le contenu des sites, et la clé du modèle n’est envoyée qu’au service configuré.
 
 Cette version ne contient ni publicité, ni télémétrie automatique, ni envoi en arrière-plan de l’historique d’utilisation. Les diagnostics de test sont conservés localement ; vérifiez leur contenu avant de les partager. Les résultats du modèle peuvent être erronés. Les traductions de résumés et les synthèses indiquent les sources sur lesquelles elles reposent ; elles ne remplacent ni les conclusions tirées du texte intégral ni une évaluation de la qualité de l’article. Les essais sur des pages réelles et les vérifications humaines, notamment par des locuteurs natifs des quatre langues, ne sont pas terminés.
 
