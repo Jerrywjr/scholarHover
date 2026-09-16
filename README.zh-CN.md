@@ -94,6 +94,6 @@ npm run test:e2e
 npm run package
 ```
 
-测试不需要真实模型 Key。欢迎在 [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues) 提供扩展版本、复现步骤与预期行为，尤其是可复现的匹配错误、无障碍问题和语言反馈；请勿提交 API Key 或私有论文内容。参与方法见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+测试不需要真实模型 Key。首次公开版尚未启用 GitHub Actions 云端测试；仓库提供[工作流示例与启用说明](docs/ci/README.md)。欢迎在 [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues) 提供扩展版本、复现步骤与预期行为，尤其是可复现的匹配错误、无障碍问题和语言反馈；请勿提交 API Key 或私有论文内容。参与方法见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 代码采用 [MIT 许可](LICENSE)，第三方数据和服务保留各自条款。知阅是独立项目，与 Google Scholar、OpenAlex 或模型服务商没有隶属关系。

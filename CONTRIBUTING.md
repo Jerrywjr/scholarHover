@@ -27,7 +27,7 @@ All paths in this paragraph are relative to `scholar-hover/`. Language support i
 
 Do not commit API keys, browser profiles, private papers, local credentials, `node_modules`, generated build/release files or machine-specific paths. Describe reproduction steps without secrets.
 
-GitHub Actions runs tests and builds with read-only repository permissions. It does not publish a release or upload to the Chrome Web Store. New contributions are provided under the repository's MIT license; third-party data and services retain their own terms.
+The [GitHub Actions workflow example](docs/ci/README.md) is included but inactive: the initial publishing credentials do not permit workflow creation. Local checks remain available. An authorized maintainer can enable the example; it runs tests and builds with read-only repository permissions and does not publish releases or upload to the Chrome Web Store. New contributions are provided under the repository's MIT license; third-party data and services retain their own terms.
 
 ## Evaluation and release scope
 

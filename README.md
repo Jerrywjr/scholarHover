@@ -94,6 +94,6 @@ npm run test:e2e
 npm run package
 ```
 
-Use Node.js 22. Tests need no real model key. For bugs, include the extension version, reproduction steps and expected behavior in [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues)—never API keys or private paper content. Reproducible matching failures, accessibility feedback and language reviews are especially useful. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Use Node.js 22. Tests need no real model key. Hosted GitHub Actions is not enabled in this initial publication; a [workflow example and setup instructions](docs/ci/README.md) are included. For bugs, include the extension version, reproduction steps and expected behavior in [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues)—never API keys or private paper content. Reproducible matching failures, accessibility feedback and language reviews are especially useful. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Code is licensed under [MIT](LICENSE). Third-party data and services retain their own terms. Scholar Hover is an independent project, unaffiliated with Google Scholar, OpenAlex or model providers.
