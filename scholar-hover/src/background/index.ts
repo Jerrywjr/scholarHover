@@ -1,6 +1,6 @@
 import { createRouter } from './router';
 import { initializeStorage, readSettings, readCredentials, saveSettings, clearKeys } from './settings';
-import { getCached, putCached, clearCache } from './cache';
+import { getCached, putCached, clearCache, getPreview, putPreview } from './cache';
 import { makeFingerprint, testConnection } from './model';
 import { generatePaperOffscreen } from './long-model';
 import { resolvePaper } from './metadata';
@@ -34,7 +34,7 @@ const route = createRouter({
   extensionId: chrome.runtime.id,
   getSession: async key => (await chrome.storage.session.get(key))[key],
   setSession: async (key, value) => { await chrome.storage.session.set({ [key]: value }); },
-  readSettings, readCredentials, saveSettings, clearKeys, getCached, putCached, clearCache,
+  readSettings, readCredentials, saveSettings, clearKeys, getCached, putCached, clearCache, getPreview, putPreview,
   resolvePaper, fingerprint: makeFingerprint,
   generate: (paper, settings, apiKey) => timeModel(() => generatePaperOffscreen(paper, settings, apiKey)),
   testConnection: (settings, apiKey) => timeModel(() => testConnection(settings, apiKey)),
@@ -43,13 +43,17 @@ const route = createRouter({
   openCollection: async () => { await chrome.tabs.create({ url: chrome.runtime.getURL('collection.html') }); },
   collection, exports,
 });
+// A collection recovery error must not prevent Settings or deletion controls
+// from opening; storage initialization itself remains a required boundary.
+const resumed = ready.then(() => route.resume().catch(() => {}));
+void resumed.catch(() => {});
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target === 'scholar-hover-offscreen') return false;
   if (message?.target === 'scholar-hover-background' && message?.type === 'MODEL_HEARTBEAT') {
     if (sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('offscreen.html') && !sender.tab) sendResponse({ ok: true });
     return false;
   }
-  void ready.then(() => route(message, sender)).then(sendResponse).catch(() => sendResponse({ ok: false, error: '扩展存储初始化失败，请重新加载扩展。' }));
+  void resumed.then(() => route(message, sender)).then(sendResponse).catch(() => sendResponse({ ok: false, error: '扩展存储初始化失败，请重新加载扩展。' }));
   return true;
 });
 chrome.action.onClicked.addListener(() => { void chrome.runtime.openOptionsPage(); });

@@ -3,7 +3,7 @@ import { rpc } from '../shared/rpc.ts';
 import { localizeError } from '../shared/errors.ts';
 import { LANGUAGES, type Language } from '../shared/languages.ts';
 import { contentText, type ContentMessageKey } from './messages.ts';
-import type { Generated, Paper, PaperSeed, Resolution, SavedPaper, SettingsView } from '../shared/types.ts';
+import type { CompletionStatus, Generated, Paper, PaperSeed, PreviewSnapshot, PreviewState, Resolution, SavedPaper, SettingsView } from '../shared/types.ts';
 
 const RESULT_SELECTOR = '.gs_r.gs_or.gs_scl';
 const TITLE_SELECTOR = '.gs_rt';
@@ -26,6 +26,9 @@ type Active = {
   outputPending?: string;
   savePending?: string;
   savedPaperId?: string;
+  saved?: SavedPaper;
+  previewPending?: boolean;
+  previewRead?: number;
   saveNotice?: { key: ContentMessageKey; failure: boolean; detail?: string };
   collectionPending?: boolean;
 };
@@ -36,6 +39,7 @@ type CardFocus =
   | { kind: 'body' }
   | { kind: 'edge'; edge: string }
   | { kind: 'link'; href: string; className: string };
+type PreviewRead = { snapshot: PreviewSnapshot; configuration: string; epoch: number; failed?: boolean; error?: string };
 
 function cleanTitle(value: string): string {
   return value.replace(/^\s*(?:\[(?:PDF|HTML)\]\s*)+/i, '').replace(/\s+/g, ' ').trim();
@@ -173,12 +177,88 @@ export function startContentScript(): () => void {
   let resizing: { pointerId: number; edge: 'top' | 'bottom'; y: number; top: number; height: number } | undefined;
   let panel = { top: 0, height: window.innerHeight, fullHeight: true };
   const failedGenerationAttempts = new Set<string>();
+  const viewed = new Set<string>();
+  const memo = new Map<string, { snapshot: PreviewSnapshot; configuration: string }>();
+  const previews = new Map<string, Promise<PreviewRead>>();
+  const saving = new Map<string, Promise<SavedPaper>>();
+  const seedEpoch = new Map<string, number>();
+  const badgeStates = new Map<string, PreviewState>();
+  const badgeReads = new Map<string, number>();
+  let badgeRead = 0;
+  let previewTimer: number | undefined;
+  let previewRead = 0;
   let preferences: SettingsView = { uiLanguage: 'zh-CN', outputLanguage: 'zh-CN', baseUrl: '', model: '', autoGenerate: false, consent: false, rememberKey: false, hasApiKey: false, hasOpenAlexKey: false };
   let configRevision = 0;
   let settingsRead = 0;
   let stopped = false;
   let settingsReady: Promise<void>;
   const label = (key: ContentMessageKey) => contentText(key, preferences.uiLanguage, preferences.outputLanguage);
+  const seedKey = (seed: PaperSeed) => JSON.stringify([seed.url, seed.title, seed.authors, seed.year, seed.doi, seed.preprint]);
+  const configuration = () => JSON.stringify([preferences.outputLanguage, preferences.baseUrl, preferences.model]);
+  const validGenerated = (generated: Generated | undefined) => generated?.language === preferences.outputLanguage
+    && (!preferences.model || generated.model === preferences.model) ? generated : undefined;
+  const completionPending = (saved?: SavedPaper) => saved?.completion && ['queued', 'resolving', 'generating'].includes(saved.completion.status);
+  const completionLabels: Record<CompletionStatus, ContentMessageKey> = {
+    queued: 'completionQueued', resolving: 'completionResolving', generating: 'completionGenerating', ready: 'completionReady',
+    'needs-confirmation': 'completionConfirm', 'needs-configuration': 'completionConfigure', failed: 'completionFailed', interrupted: 'completionInterrupted',
+  };
+  const saveMemo = (seed: PaperSeed, snapshot: PreviewSnapshot, config = configuration()) => {
+    const key = seedKey(seed); memo.delete(key); memo.set(key, { snapshot, configuration: config });
+    if (snapshot.saved) badgeStates.set(key, 'saved');
+    while (memo.size > 200) memo.delete(memo.keys().next().value!);
+  };
+  const memoSnapshot = (seed: PaperSeed): PreviewSnapshot | undefined => {
+    const entry = memo.get(seedKey(seed));
+    return entry ? { ...entry.snapshot, generated: entry.configuration === configuration() ? validGenerated(entry.snapshot.generated) : undefined } : undefined;
+  };
+  const updateBadges = () => {
+    if (stopped || !host.isConnected) return;
+    for (const result of document.querySelectorAll<HTMLElement>(RESULT_SELECTOR)) {
+      const seed = parseResult(result); if (!seed) continue;
+      const key = seedKey(seed), known = memo.get(key)?.snapshot;
+      const state = saving.has(key) ? 'saving' : known?.saved ? 'saved' : viewed.has(key) || known?.resolution ? 'viewed' : badgeStates.get(key) ?? 'unknown';
+      result.dataset.scholarHoverState = state;
+      let badge = result.querySelector<HTMLElement>('[data-scholar-hover-badge]');
+      if (state === 'unknown') { badge?.remove(); continue; }
+      if (!badge) {
+        badge = document.createElement('span'); badge.dataset.scholarHoverBadge = 'true';
+        badge.style.cssText = 'display:inline-block;font:11px/1.5 Arial,sans-serif;border-radius:4px;padding:1px 6px;margin:2px 0 5px;background:#edf5f5;color:#47717a;';
+        result.querySelector(TITLE_SELECTOR)?.insertAdjacentElement('afterend', badge);
+      }
+      const value = label(state === 'saving' ? 'saving' : state === 'saved' ? 'savedBadge' : state === 'viewed' ? 'viewed' : 'unviewed');
+      if (badge.textContent !== value) badge.textContent = value;
+    }
+  };
+  const requestBadgeStates = (refresh = false) => {
+    if (stopped || !host.isConnected) return;
+    const unique = new Map<string, PaperSeed>();
+    for (const result of document.querySelectorAll(RESULT_SELECTOR)) {
+      const seed = parseResult(result);
+      if (seed && (refresh || !badgeReads.has(seedKey(seed)))) unique.set(seedKey(seed), seed);
+    }
+    const entries = Array.from(unique.entries());
+    for (let offset = 0; offset < entries.length; offset += 100) {
+      const batch = entries.slice(offset, offset + 100), read = ++badgeRead;
+      const epochs = batch.map(([key]) => seedEpoch.get(key) ?? 0);
+      for (const [key] of batch) badgeReads.set(key, read);
+      void rpc<PreviewState[]>({ type: 'GET_PREVIEW_STATES', seeds: batch.map(([, seed]) => seed) }).then(states => {
+        if (stopped || !host.isConnected || !Array.isArray(states)) return;
+        batch.forEach(([key], index) => {
+          if (badgeReads.get(key) !== read || (seedEpoch.get(key) ?? 0) !== epochs[index]) return;
+          const state = states[index];
+          // A failed local read is unknown, not evidence that the paper was never viewed.
+          if (state === 'unviewed' || state === 'viewed' || state === 'saved') badgeStates.set(key, state);
+        });
+        updateBadges();
+      }).catch(() => { /* Retain known states; focus refresh can retry this local read. */ });
+    }
+  };
+  const rememberActive = () => {
+    if (!active) return;
+    saveMemo(active.seed, { resolution: active.resolution, generated: active.generated, saved: active.saved });
+    updateBadges();
+  };
+  const stopPreviewPoll = () => { if (previewTimer) window.clearTimeout(previewTimer); previewTimer = undefined; };
 
   const current = (expected: number) => active?.token === expected && host.isConnected;
   const minimumHeight = () => Math.min(window.innerHeight, Math.max(360,
@@ -219,6 +299,7 @@ export function startContentScript(): () => void {
   };
   const close = (restoreFocus = false) => {
     const prior = active;
+    stopPreviewPoll();
     active = undefined;
     finishResize();
     token += 1;
@@ -272,7 +353,8 @@ export function startContentScript(): () => void {
     if (active.generated?.titleTranslated) { const p = document.createElement('p'); p.className = 'translated'; p.lang = active.generated.language; p.textContent = active.generated.titleTranslated; body.append(p); }
     const status = document.createElement('p'); status.className = `status${active.notice?.failure ? ' failure' : ''}`; status.setAttribute('role', 'status'); status.textContent = active.generationPending ? label('generating') : active.notice?.detail ? localizeError(active.notice.detail, preferences.uiLanguage) : label(active.notice?.key ?? (active.paper ? 'matched' : 'resolving'));
     if (active.resolution?.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = localizeError(active.resolution.warning, preferences.uiLanguage); body.append(warning); }
-    if (active.resolution?.candidates.length && active.paper?.matchStatus === 'unresolved') {
+    if (active.resolution?.cacheWarning) { const warning = document.createElement('p'); warning.className = 'warning cache-warning'; warning.textContent = localizeError(active.resolution.cacheWarning, preferences.uiLanguage); body.append(warning); }
+    if (active.resolution?.candidates.length && active.paper?.matchStatus === 'unresolved' && !active.saved) {
       const section = document.createElement('div'); section.className = 'section';
       text(section, label('chooseMatch'), 'label');
       for (const candidate of active.resolution.candidates) {
@@ -302,24 +384,27 @@ export function startContentScript(): () => void {
     if (active.seed.url && isSafeUrl(active.seed.url)) { const original = document.createElement('a'); original.className = 'original'; original.href = active.seed.url; original.target = '_blank'; original.rel = 'noopener noreferrer'; original.textContent = label('openOriginal'); footerActions.append(original); }
     if (active.paper) footerActions.append(cardButton(label('copy'), 'copy'));
     if (active.paper && !active.generated) {
-      const generating = !!active.generationPending;
+      const generating = !!active.generationPending || !!completionPending(active.saved);
       const generate = cardButton(label(generating ? 'generating' : active.notice?.failure ? 'retryGenerate' : 'generate'), 'generate');
       generate.disabled = generating; footerActions.append(generate);
     }
     footerActions.append(cardButton(label('settings'), 'settings'));
     footer.append(footerActions);
     const collectionActions = document.createElement('div'); collectionActions.className = 'collection-actions';
-    const saving = !!active.paper && active.savePending === active.paper.id;
-    const saved = !!active.paper && active.savedPaperId === active.paper.id;
-    const save = cardButton(label(saving ? 'saving' : saved ? 'savedButton' : 'save'), 'save');
-    save.disabled = !active.paper || saving;
+    const savingNow = !!active.savePending || saving.has(seedKey(active.seed));
+    const saved = !!active.saved;
+    const save = cardButton(label(savingNow ? 'saving' : saved ? 'savedButton' : 'save'), 'save');
+    save.disabled = savingNow;
     const collection = cardButton(label(active.collectionPending ? 'collectionOpening' : 'collection'), 'collection');
     collection.disabled = !!active.collectionPending;
     collectionActions.append(save, collection); footer.append(collectionActions);
-    if (active.saveNotice) {
-      const saveStatus = document.createElement('p'); saveStatus.className = `status save-status${active.saveNotice.failure ? ' failure' : ''}`;
+    if (active.saveNotice || active.saved?.completion) {
+      const saveStatus = document.createElement('p'); saveStatus.className = `status save-status${active.saveNotice?.failure ? ' failure' : ''}`;
       saveStatus.setAttribute('role', 'status');
-      saveStatus.textContent = active.saveNotice.detail ? localizeError(active.saveNotice.detail, preferences.uiLanguage) : label(active.saveNotice.key);
+      saveStatus.textContent = active.saveNotice?.failure ? active.saveNotice.detail ? localizeError(active.saveNotice.detail, preferences.uiLanguage) : label(active.saveNotice.key)
+        : active.saved?.completion ? label(completionLabels[active.saved.completion.status])
+        : active.saveNotice ? active.saveNotice.detail ? localizeError(active.saveNotice.detail, preferences.uiLanguage) : label(active.saveNotice.key) : '';
+      if (active.saved?.completion?.error && !active.saveNotice?.failure) saveStatus.append(document.createTextNode(` ${localizeError(active.saved.completion.error, preferences.uiLanguage)}`));
       footer.append(saveStatus);
     }
     card.append(body, footer); root.append(card);
@@ -331,6 +416,7 @@ export function startContentScript(): () => void {
     }
     positionPanel();
     host.dataset.paperId = active.paper?.id ?? '';
+    host.dataset.saved = String(!!active.saved);
     const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button[data-action]'));
     const details = root.querySelector<HTMLDetailsElement>('details');
     if (details && previousDetailsOpen) details.open = true;
@@ -348,6 +434,7 @@ export function startContentScript(): () => void {
     } else if (active.focusPending) { active.focusPending = false; buttons.find(button => button.dataset.action === 'close')?.focus(); }
     // Keyboard focus restoration can scroll an ancestor; retain the reading position.
     body.scrollTop = previousScrollTop;
+    rememberActive();
   };
 
   const generationCurrent = (expected: number, paper: Paper, revision: number) => current(expected) && active?.paper?.id === paper.id && configRevision === revision;
@@ -366,11 +453,11 @@ export function startContentScript(): () => void {
       const generated = await rpc<Generated>({ type: 'GENERATE', paperId: paper.id, ...(force ? { force: true } : {}) });
       if (!generationCurrent(expected, paper, revision) || !active) return;
       active.generationPending = undefined;
-      if (generated.language !== preferences.outputLanguage) { render('outputChanged', true); settingsReady = refreshSettings(); return; }
+      if (!validGenerated(generated)) { render('outputChanged', true); settingsReady = refreshSettings(); return; }
       failedGenerationAttempts.delete(attempt);
       active.generated = generated;
       if (generated.collectionWarning) active.saveNotice = { key: 'saveFailed', failure: true, detail: generated.collectionWarning };
-      render('generated');
+      render(generated.cacheWarning ? 'cachedWarning' : 'generated', !!generated.cacheWarning, generated.cacheWarning);
     } catch (error) {
       if (!generationCurrent(expected, paper, revision)) return;
       active!.generationPending = undefined;
@@ -390,8 +477,8 @@ export function startContentScript(): () => void {
     try {
       const cached = await rpc<Generated | undefined>({ type: 'GET_CACHED', paperId: paper.id });
       if (!generationCurrent(expected, paper, revision) || !active) return;
-      if (cached?.language === preferences.outputLanguage) { active.generated = cached; render('cached'); return; }
-      if (preferences.hasApiKey && preferences.consent && (resumeGeneration || preferences.autoGenerate && interestedInActive())) await showGeneration(expected, paper, resumeGeneration);
+      if (validGenerated(cached)) { active.generated = cached; render('cached'); return; }
+      if (!active.saved && !active.savePending && preferences.hasApiKey && preferences.consent && (resumeGeneration || preferences.autoGenerate && interestedInActive())) await showGeneration(expected, paper, resumeGeneration);
     } catch { /* The matched paper remains usable without a cache. */ }
     finally {
       if (current(expected) && active?.outputPending === pending) active.outputPending = undefined;
@@ -399,7 +486,7 @@ export function startContentScript(): () => void {
   };
 
   const resumeAutomaticGeneration = () => {
-    if (active?.paper && active.paper.matchStatus !== 'unresolved' && !active.generated && !active.generationPending
+    if (active?.paper && !active.saved && !active.savePending && !active.previewPending && active.paper.matchStatus !== 'unresolved' && !active.generated && !active.generationPending
       && !active.outputPending && preferences.autoGenerate && interestedInActive()) void loadOutput(active.token, active.paper);
   };
 
@@ -413,6 +500,7 @@ export function startContentScript(): () => void {
       const uiChanged = next.uiLanguage !== preferences.uiLanguage;
       const outputChanged = next.outputLanguage !== preferences.outputLanguage || next.baseUrl !== preferences.baseUrl || next.model !== preferences.model;
       preferences = next;
+      updateBadges();
       if (outputChanged) configRevision += 1;
       if (!active) return;
       if (outputChanged) {
@@ -420,16 +508,82 @@ export function startContentScript(): () => void {
         active.generated = undefined;
         active.generationPending = undefined;
         active.outputPending = undefined;
+        active.previewPending = false;
+        active.previewRead = ++previewRead;
         render(active.paper?.matchStatus === 'unresolved' ? 'uncertain' : active.paper ? 'matched' : 'resolving');
-        if (active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(active.token, active.paper, resumeGeneration);
+        if (!active.paper) void refreshPreview(active.token, active.seed, undefined, true);
+        else if (active.saved) void refreshPreview(active.token, active.seed);
+        else if (active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(active.token, active.paper, resumeGeneration);
       } else if (uiChanged) render();
     } catch { /* Keep the last known language if settings cannot be read. */ }
   };
 
+  const applySnapshot = (snapshot: PreviewSnapshot) => {
+    if (!active) return false;
+    const before = JSON.stringify([active.resolution, active.generated, active.saved]);
+    const resolution = snapshot.resolution ?? (snapshot.saved ? { paper: snapshot.saved.paper, candidates: snapshot.saved.candidates ?? [] } : undefined);
+    if (active.saved && !snapshot.saved && !active.savePending && !active.saveNotice?.failure) active.saveNotice = undefined;
+    active.saved = snapshot.saved;
+    active.savedPaperId = snapshot.saved?.id;
+    if (resolution) { active.resolution = resolution; active.paper = resolution.paper; }
+    active.generated = validGenerated(snapshot.generated);
+    if (active.generated) active.notice = { key: 'cached', failure: false };
+    else if (resolution) active.notice = { key: resolution.paper.matchStatus === 'unresolved' ? 'uncertain' : 'matched', failure: false };
+    if (snapshot.saved && !active.saveNotice?.failure) active.saveNotice = { key: 'saved', failure: false };
+    return before !== JSON.stringify([active.resolution, active.generated, active.saved]);
+  };
+  const fetchPreview = async (seed: PaperSeed): Promise<PreviewRead> => {
+    await settingsReady;
+    const config = configuration(), source = seedKey(seed), epoch = seedEpoch.get(source) ?? 0;
+    const key = JSON.stringify([source, config, epoch]);
+    const pending = previews.get(key); if (pending) return pending;
+    const request = rpc<PreviewSnapshot | undefined>({ type: 'GET_PREVIEW', seed }).then(value => {
+      const snapshot: PreviewSnapshot = value && (value.resolution || value.saved || value.generated) ? value : {};
+      if (!stopped && (seedEpoch.get(source) ?? 0) === epoch) {
+        saveMemo(seed, snapshot, config); updateBadges();
+      }
+      return { snapshot, configuration: config, epoch };
+    }).catch(error => ({ snapshot: {}, configuration: config, epoch, failed: true, error: error instanceof Error ? error.message : undefined }));
+    previews.set(key, request);
+    try { return await request; } finally { if (previews.get(key) === request) previews.delete(key); }
+  };
+  const schedulePreviewPoll = () => {
+    stopPreviewPoll();
+    if (active && !stopped && completionPending(active.saved)) {
+      const expected = active.token, seed = active.seed;
+      previewTimer = window.setTimeout(() => { void refreshPreview(expected, seed); }, 1000);
+    }
+  };
+  const refreshPreview = async (expected: number, seed: PaperSeed, request = fetchPreview(seed), initial = false) => {
+    if (!current(expected) || !active) return;
+    const read = ++previewRead, revision = configRevision;
+    active.previewRead = read; active.previewPending = true;
+    const result = await request;
+    if (!current(expected) || !active || active.previewRead !== read || revision !== configRevision) return;
+    active.previewPending = false;
+    if (result.epoch !== (seedEpoch.get(seedKey(seed)) ?? 0)) {
+      // Saving may finish while this result is still in the 500 ms dwell period.
+      // Its prefetched snapshot predates that save even though the card is new.
+      void refreshPreview(expected, seed, fetchPreview(seed), initial);
+      return;
+    }
+    if (result.failed) {
+      stopPreviewPoll();
+      render('previewFailed', true, result.error);
+      return;
+    }
+    const snapshot = result.configuration === configuration() ? result.snapshot : { ...result.snapshot, generated: undefined };
+    const changed = applySnapshot(snapshot);
+    if (changed) render();
+    schedulePreviewPoll();
+    if (active.saved || active.savePending) return;
+    if (initial && !snapshot.resolution) void enrich(expected, seed);
+    else if (!active.generated && active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(expected, active.paper);
+  };
   const enrich = async (expected: number, seed: PaperSeed) => {
     try {
       const resolution = await rpc<Resolution>({ type: 'RESOLVE', seed });
-      if (!current(expected) || !active) return;
+      if (!current(expected) || !active || active.saved || active.savePending) return;
       active.resolution = resolution;
       active.paper = resolution.paper;
       render(resolution.paper.matchStatus === 'unresolved' ? 'uncertain' : 'matched');
@@ -440,20 +594,25 @@ export function startContentScript(): () => void {
     }
   };
 
-  const open = (element: Element, keyboard = false) => {
+  const open = (element: Element, keyboard = false, preview?: Promise<PreviewRead>) => {
     if (active?.pinned && active.element !== element) return;
     const seed = parseResult(element); if (!seed) return;
     if (active?.element === element) { resumeAutomaticGeneration(); return; }
     if (hoverTimer) window.clearTimeout(hoverTimer);
+    stopPreviewPoll();
     const expected = ++token;
-    active = { element, seed, token: expected, pinned: false, titleHovered: !keyboard, cardHovered: false, keyboard, focusPending: keyboard };
+    active = { element, seed, token: expected, pinned: false, titleHovered: !keyboard, cardHovered: false, keyboard, focusPending: keyboard, previewPending: true, ...(saving.has(seedKey(seed)) ? { savePending: seedKey(seed) } : {}) };
+    viewed.add(seedKey(seed));
+    const existing = memoSnapshot(seed); if (existing) applySnapshot(existing);
     host.style.display = 'block'; positionPanel(); render();
-    void enrich(expected, seed);
+    void refreshPreview(expected, seed, preview ?? fetchPreview(seed), true);
   };
   const scheduleOpen = (element: Element, keyboard = false) => {
     if (active?.pinned && active.element !== element) return;
     if (hoverTimer) window.clearTimeout(hoverTimer);
-    hoverTimer = window.setTimeout(() => open(element, keyboard), HOVER_DELAY);
+    const seed = parseResult(element);
+    const preview = seed ? fetchPreview(seed) : undefined;
+    hoverTimer = window.setTimeout(() => open(element, keyboard, preview), HOVER_DELAY);
   };
   const onOver = (event: MouseEvent) => {
     const element = resultFor(event.target);
@@ -485,17 +644,29 @@ export function startContentScript(): () => void {
     if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); resumeAutomaticGeneration(); return; }
     if (button.disabled) return;
     if (button.dataset.action === 'reset-height') { panel.fullHeight = true; positionPanel(); return; }
-    if (button.dataset.action === 'save' && active.paper) {
-      const paper = active.paper;
-      if (active.savePending === paper.id) return;
-      pinPanel();
-      active.savePending = paper.id; active.saveNotice = { key: 'saving', failure: false }; render();
-      void rpc<SavedPaper>({ type: 'SAVE_PAPER', paperId: paper.id }).then(() => {
-        if (!current(expected) || !active || active.paper !== paper) return;
-        active.savePending = undefined; active.savedPaperId = paper.id;
-        active.saveNotice = { key: paper.matchStatus === 'unresolved' ? 'savedUnresolved' : 'saved', failure: false }; render();
+    if (button.dataset.action === 'save') {
+      const seed = active.seed, key = seedKey(seed), paperId = active.paper?.id;
+      if (saving.has(key)) return;
+      seedEpoch.set(key, (seedEpoch.get(key) ?? 0) + 1);
+      active.previewRead = ++previewRead; active.previewPending = false;
+      active.savePending = key; active.saveNotice = { key: 'saving', failure: false };
+      const request = rpc<SavedPaper>({ type: 'SAVE_PAPER', seed, ...(paperId ? { paperId } : {}) });
+      saving.set(key, request); render();
+      void request.then(saved => {
+        saving.delete(key);
+        seedEpoch.set(key, (seedEpoch.get(key) ?? 0) + 1);
+        const prior = memoSnapshot(seed) ?? {};
+        const resolution = prior.resolution ?? { paper: saved.paper, candidates: saved.candidates ?? [] };
+        saveMemo(seed, { ...prior, resolution, saved }); updateBadges();
+        if (!active || seedKey(active.seed) !== key || stopped) return;
+        active.previewRead = ++previewRead; active.previewPending = false;
+        active.savePending = undefined; active.savedPaperId = saved.id; active.saved = saved;
+        if (!active.paper) { active.paper = resolution.paper; active.resolution = resolution; }
+        active.saveNotice = { key: saved.paper.matchStatus === 'unresolved' ? 'savedUnresolved' : 'saved', failure: false }; render();
+        schedulePreviewPoll();
       }).catch(error => {
-        if (!current(expected) || !active || active.paper !== paper) return;
+        saving.delete(key);
+        if (!active || seedKey(active.seed) !== key || stopped) return;
         active.savePending = undefined;
         active.saveNotice = { key: 'saveFailed', failure: true, detail: error instanceof Error ? error.message : undefined }; render();
       }); return;
@@ -566,7 +737,7 @@ export function startContentScript(): () => void {
     }
   };
   const onResize = () => { if (active) positionPanel(); };
-  const onWindowFocus = () => { settingsReady = refreshSettings(); };
+  const onWindowFocus = () => { requestBadgeStates(true); settingsReady = refreshSettings(); void settingsReady.then(() => { if (active?.saved) void refreshPreview(active.token, active.seed); }); };
   settingsReady = refreshSettings();
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('resize', onResize);
@@ -578,9 +749,11 @@ export function startContentScript(): () => void {
   document.addEventListener('mouseover', onOver, true); document.addEventListener('mouseout', onOut, true); document.addEventListener('focusin', onFocus, true); document.addEventListener('keydown', onKey, true); document.addEventListener('pointerdown', onPointerDown, true);
   host.addEventListener('mouseover', onHostOver); host.addEventListener('mouseout', onHostOut); root.addEventListener('focusin', onHostFocus);
   root.addEventListener('click', onCardClick);
-  const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); });
+  const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); updateBadges(); requestBadgeStates(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onResizeMove, true); document.removeEventListener('pointerup', onResizeEnd, true); document.removeEventListener('pointercancel', onResizeEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); host.remove(); };
+  updateBadges();
+  requestBadgeStates();
+  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onResizeMove, true); document.removeEventListener('pointerup', onResizeEnd, true); document.removeEventListener('pointercancel', onResizeEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); document.querySelectorAll('[data-scholar-hover-badge]').forEach(badge => badge.remove()); document.querySelectorAll<HTMLElement>('[data-scholar-hover-state]').forEach(result => { delete result.dataset.scholarHoverState; }); host.remove(); };
 }
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.id && typeof document !== 'undefined') startContentScript();

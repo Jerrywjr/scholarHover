@@ -1,6 +1,9 @@
-import type { Credentials, Generated, Paper, PaperSeed, Resolution, Response, Settings, SettingsView } from '../shared/types';
+import type { Credentials, Generated, Paper, PaperSeed, Resolution, Response, SavedPaper, Settings, SettingsView } from '../shared/types';
 import type { createCollectionStore } from './collection';
 import type { createExportManager } from './downloads';
+import { previewKey } from '../shared/identity';
+import { createCompletionQueue } from './completion';
+import { unresolvedPaper } from './metadata';
 
 export interface RouterDependencies {
   extensionId: string;
@@ -11,6 +14,8 @@ export interface RouterDependencies {
   saveSettings(settings: Settings, keys?: { apiKey?: string; openAlexKey?: string }): Promise<SettingsView>;
   clearKeys(): Promise<void>;
   clearCache(): Promise<void>;
+  getPreview(seed: PaperSeed): Promise<Resolution | undefined>;
+  putPreview(seed: PaperSeed, resolution: Resolution): Promise<void>;
   resolvePaper(seed: PaperSeed, openAlexKey?: string): Promise<Resolution>;
   fingerprint(paper: Paper, settings: Settings): Promise<string>;
   getCached(fingerprint: string): Promise<Generated | undefined>;
@@ -49,6 +54,8 @@ export function createRouter(deps: RouterDependencies) {
     return result;
   }
   const resolving = new Map<string, Promise<Resolution>>();
+  const previewMemory = new Map<string, Resolution>();
+  const generatedMemory = new Map<string, Generated>();
   const generating = new Map<string, Promise<Generated>>();
   async function updateSavedCopy(paper: Paper, generated: Generated): Promise<Generated> {
     try {
@@ -97,7 +104,102 @@ export function createRouter(deps: RouterDependencies) {
     if (!apiKey) throw new Error('请先填写模型 API Key；会话密钥在浏览器重启后需要重新填写。');
     return { settings, apiKey };
   }); }
-  return async (input: unknown, sender: chrome.runtime.MessageSender): Promise<Response<unknown>> => {
+  const registryKey = (tab: number, seed: PaperSeed) => `${tab}:${previewKey(seed)}`;
+  async function archived(seed: PaperSeed) {
+    try { return await deps.getPreview(seed) ?? previewMemory.get(previewKey(seed)); }
+    catch (error) {
+      const memory = previewMemory.get(previewKey(seed));
+      if (memory) return memory;
+      const saved = await findSaved(seed);
+      if (saved && (saved.generated || saved.paper.source !== 'Google Scholar' || saved.candidates?.length)) return { paper: saved.paper, candidates: saved.candidates ?? [] };
+      throw error;
+    }
+  }
+  async function archive(seed: PaperSeed, resolution: Resolution, epoch = cacheEpoch) {
+    if (epoch !== cacheEpoch) return;
+    previewMemory.set(previewKey(seed), resolution);
+    try { await deps.putPreview(seed, resolution); }
+    catch { resolution.cacheWarning = '无法保存本地归档，请检查可用空间后重试；现有数据未删除。'; }
+  }
+  async function resolve(seed: PaperSeed): Promise<Resolution> {
+    const key = previewKey(seed);
+    const existing = await archived(seed);
+    // Preserve every loaded result, but an explicit retry can re-query failures.
+    if (existing && (!existing.warning || existing.paper.matchStatus !== 'unresolved' || existing.candidates.length)) return existing;
+    if (!resolving.has(key)) {
+      const epoch = cacheEpoch;
+      const operation = (async () => {
+        const { openAlexKey } = await deps.readCredentials();
+        const resolution = await deps.resolvePaper(seed, openAlexKey);
+        await archive(seed, resolution, epoch);
+        return resolution;
+      })();
+      resolving.set(key, operation);
+      void operation.finally(() => resolving.delete(key)).catch(() => {});
+    }
+    return resolving.get(key)!;
+  }
+  async function cached(paper: Paper, settings?: Settings): Promise<Generated | undefined> {
+    const fingerprint = await deps.fingerprint(paper, settings ?? await deps.readSettings());
+    let stored: Generated | undefined;
+    let readError: unknown;
+    try { stored = await deps.getCached(fingerprint); } catch (error) { readError = error; }
+    const result = stored ?? generatedMemory.get(fingerprint) ?? (await deps.collection.list()).items.find(item => item.paper.id === paper.id && item.generated?.fingerprint === fingerprint)?.generated;
+    if (!result && readError) throw readError;
+    return result;
+  }
+  async function generate(paper: Paper): Promise<Generated> {
+    const initialSettings = await deps.readSettings();
+    const initialFingerprint = await deps.fingerprint(paper, initialSettings);
+    const existing = await cached(paper, initialSettings);
+    if (existing) return updateSavedCopy(paper, existing);
+    const { settings, apiKey } = await modelContext();
+    const fingerprint = await deps.fingerprint(paper, settings);
+    if (fingerprint !== initialFingerprint) {
+      const latest = await cached(paper, settings);
+      if (latest) return updateSavedCopy(paper, latest);
+    }
+    if (!generating.has(fingerprint)) {
+      const epoch = cacheEpoch;
+      const generation = (async () => {
+        let result = await deps.generate(paper, settings, apiKey);
+        if (epoch === cacheEpoch) {
+          generatedMemory.set(fingerprint, result);
+          try { await deps.putCached(result); }
+          catch { result = { ...result, cacheWarning: '译文已生成，但本机存储失败；请立即复制或导出，避免关闭浏览器后丢失。' }; generatedMemory.set(fingerprint, result); }
+        }
+        return updateSavedCopy(paper, result);
+      })();
+      generating.set(fingerprint, generation);
+      void generation.finally(() => generating.delete(fingerprint)).catch(() => {});
+    }
+    return generating.get(fingerprint)!;
+  }
+  async function finishSaved(item: SavedPaper, paper: Paper, generated: Generated) {
+    await withConfiguration(async () => {
+      const settings = await deps.readSettings();
+      const current = (await deps.collection.list()).items.find(value => value.id === item.id && value.savedAt === item.savedAt);
+      if (!current) return;
+      const expected = await deps.fingerprint(paper, settings);
+      if (await deps.fingerprint(current.paper, settings) !== expected) return;
+      const output = generated.fingerprint === expected ? generated : await cached(paper, settings);
+      await deps.collection.update(item.id, item.savedAt, output
+        ? { generated: output, candidates: [], completion: { status: 'ready', updatedAt: Date.now() } }
+        : { completion: { status: 'needs-configuration', updatedAt: Date.now(), error: '模型配置已更改，旧译文已保留；请按当前配置手动重试。' } }, paper);
+    });
+  }
+  const jobs = createCompletionQueue({ collection: deps.collection, resolve, cached, generate, finish: finishSaved });
+  async function findSaved(seed: PaperSeed, paper?: Paper) {
+    const key = previewKey(seed);
+    const { items } = await deps.collection.list();
+    return items.find(item => item.sourceKey === key) ?? (paper ? items.find(item => item.paper.id === paper.id) : undefined);
+  }
+  async function queueSaved(item: SavedPaper) {
+    const updated = await deps.collection.update(item.id, item.savedAt, { completion: { status: 'queued', updatedAt: Date.now() } });
+    jobs.kick();
+    return updated;
+  }
+  const route = async (input: unknown, sender: chrome.runtime.MessageSender): Promise<Response<unknown>> => {
     try {
       const msg = input as Record<string, unknown>;
       if (!msg || typeof msg.type !== 'string' || sender.id !== deps.extensionId) throw new Error('请求来源无效。');
@@ -108,7 +210,7 @@ export function createRouter(deps: RouterDependencies) {
       if (!trusted && !collectionPage && !scholar) throw new Error('此页面不支持文献助手。');
       const privileged = ['SAVE_SETTINGS', 'TEST_CONNECTION', 'CLEAR_CACHE', 'CLEAR_KEYS'];
       if (privileged.includes(msg.type) && !trusted) throw new Error('请在扩展设置页执行此操作。');
-      const collectionOnly = ['GET_COLLECTION', 'REMOVE_SAVED', 'REORDER_SAVED', 'CLEAR_COLLECTION', 'EXPORT_COLLECTION', 'GET_EXPORT', 'RETRY_DOWNLOAD'];
+      const collectionOnly = ['GET_COLLECTION', 'REMOVE_SAVED', 'REORDER_SAVED', 'CLEAR_COLLECTION', 'EXPORT_COLLECTION', 'GET_EXPORT', 'RETRY_DOWNLOAD', 'RETRY_SAVED', 'CONFIRM_SAVED'];
       if (collectionOnly.includes(msg.type) && !collectionPage) throw new Error('请在缓存文章管理页执行此操作。');
       const tab = sender.tab?.id ?? -1;
       let data: unknown;
@@ -123,16 +225,46 @@ export function createRouter(deps: RouterDependencies) {
           break;
         }
         case 'CLEAR_KEYS': await withConfiguration(() => deps.clearKeys()); break;
-        case 'CLEAR_CACHE': cacheEpoch++; await deps.clearCache(); await writing; await deps.setSession('paperRegistry', []); break;
+        case 'CLEAR_CACHE': cacheEpoch++; previewMemory.clear(); generatedMemory.clear(); await deps.clearCache(); await writing; await deps.setSession('paperRegistry', []); break;
         case 'OPEN_SETTINGS': await deps.openSettings(); break;
         case 'OPEN_COLLECTION': await deps.openCollection(); break;
         case 'SAVE_PAPER': {
           if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
-          const paper = await getPaper(tab, msg.paperId);
           data = await withConfiguration(async () => {
-            const generated = await deps.getCached(await deps.fingerprint(paper, await deps.readSettings()));
-            return deps.collection.save(paper, generated);
+            const seed = msg.seed === undefined ? undefined : parseSeed(msg.seed);
+            // New saves never wait for archive migration or an external request.
+            // A displayed paper is already registered; otherwise save its visible seed.
+            const registered = msg.paperId === undefined ? undefined : await getPaper(tab, msg.paperId);
+            const resolution = seed ? previewMemory.get(previewKey(seed)) : undefined;
+            const paper = registered ?? resolution?.paper ?? (seed ? unresolvedPaper(seed) : await getPaper(tab, msg.paperId));
+            const source = seed ?? paper;
+            const existing = await findSaved(source, paper);
+            if (existing) return existing;
+            const generated = seed ? undefined : await cached(paper, await deps.readSettings()).catch(() => undefined);
+            return deps.collection.save(paper, generated, {
+              seed: source, sourceKey: previewKey(source), candidates: resolution?.candidates ?? [],
+              completion: { status: generated ? 'ready' : 'queued', updatedAt: Date.now() },
+            });
           });
+          // Acknowledgment depends only on local storage, never on metadata/model work.
+          jobs.kick();
+          break;
+        }
+        case 'RETRY_SAVED': {
+          const item = (await deps.collection.list()).items.find(value => value.id === msg.id);
+          if (!item) throw new Error('缓存文章不存在，请刷新后重试。');
+          if (item.completion && ['queued', 'resolving', 'generating', 'needs-confirmation'].includes(item.completion.status)) { data = item; break; }
+          data = await queueSaved(item);
+          break;
+        }
+        case 'CONFIRM_SAVED': {
+          const item = (await deps.collection.list()).items.find(value => value.id === msg.id);
+          const candidate = item?.candidates?.find(value => value.id === msg.candidateId);
+          if (!item || !candidate) throw new Error('候选已失效，请重新打开卡片。');
+          const resolution: Resolution = { paper: { ...candidate, matchStatus: 'confirmed' }, candidates: [] };
+          await archive(item.seed ?? item.paper, resolution);
+          data = await deps.collection.update(item.id, item.savedAt, { paper: resolution.paper, candidates: [], completion: { status: 'queued', updatedAt: Date.now() } });
+          jobs.kick();
           break;
         }
         case 'GET_COLLECTION': data = await deps.collection.list(); break;
@@ -151,60 +283,73 @@ export function createRouter(deps: RouterDependencies) {
           data = await deps.exports.retry(msg.batchId, msg.itemId); break;
         }
         case 'TEST_CONNECTION': { const ctx = await modelContext(); await deps.testConnection(ctx.settings, ctx.apiKey); break; }
+        case 'GET_PREVIEW_STATES': {
+          if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
+          if (!Array.isArray(msg.seeds) || msg.seeds.length > 100) throw new Error('论文信息格式不正确，请刷新搜索结果。');
+          const seeds = msg.seeds.map(parseSeed);
+          const { items } = await deps.collection.list();
+          data = await Promise.all(seeds.map(async seed => {
+            const key = previewKey(seed);
+            if (items.some(item => item.sourceKey === key)) return 'saved';
+            try {
+              const resolution = await archived(seed);
+              if (resolution && items.some(item => item.paper.id === resolution.paper.id)) return 'saved';
+              return resolution ? 'viewed' : 'unviewed';
+            } catch { return 'unknown'; }
+          }));
+          break;
+        }
+        case 'GET_PREVIEW': {
+          if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
+          const seed = parseSeed(msg.seed);
+          let resolution: Resolution | undefined;
+          let archiveError: unknown;
+          try { resolution = await archived(seed); } catch (error) { archiveError = error; }
+          const saved = await findSaved(seed, resolution?.paper);
+          if (archiveError && !saved) throw archiveError;
+          // Explicitly saved papers survive clearing the separate preview archive.
+          if (!resolution && saved) resolution = { paper: saved.paper, candidates: saved.candidates ?? [] };
+          if (resolution) await save({ key: registryKey(tab, seed), tab, resolution, at: Date.now() });
+          let generated = resolution ? await cached(resolution.paper) : undefined;
+          if (!generated && saved?.generated && resolution && saved.generated.fingerprint === await deps.fingerprint(resolution.paper, await deps.readSettings())) generated = saved.generated;
+          data = { resolution, generated, saved };
+          break;
+        }
         case 'RESOLVE': {
           if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
           const seed = parseSeed(msg.seed);
-          const key = `${tab}:${JSON.stringify(seed)}`;
-          const existing = (await entries()).find(e => e.key === key);
-          // Failed provider responses remain retryable; successful metadata reuses session cache.
-          if (existing && !existing.resolution.warning) { data = existing.resolution; break; }
-          if (!resolving.has(key)) {
-            const epoch = cacheEpoch;
-            const operation = (async () => {
-              const { openAlexKey } = await deps.readCredentials();
-              const resolution = await deps.resolvePaper(seed, openAlexKey);
-              await save({ key, tab, resolution, at: Date.now() }, epoch);
-              return resolution;
-            })();
-            resolving.set(key, operation);
-            void operation.finally(() => resolving.delete(key)).catch(() => {});
-          }
-          data = await resolving.get(key);
+          const epoch = cacheEpoch;
+          const resolution = await resolve(seed);
+          await save({ key: registryKey(tab, seed), tab, resolution, at: Date.now() }, epoch);
+          data = resolution;
           break;
         }
         case 'CONFIRM': {
+          if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
           const seed = parseSeed(msg.seed);
-          const key = `${tab}:${JSON.stringify(seed)}`;
+          const key = registryKey(tab, seed);
           const record = (await entries()).find(e => e.key === key);
           const candidate = record?.resolution.candidates.find(p => p.id === msg.candidateId);
           if (!record || !candidate) throw new Error('候选已失效，请重新打开卡片。');
           const resolution: Resolution = { paper: { ...candidate, matchStatus: 'confirmed' }, candidates: [] };
           await save({ ...record, resolution, at: Date.now() });
+          await archive(seed, resolution);
+          const saved = await findSaved(seed, resolution.paper);
+          if (saved) {
+            await deps.collection.update(saved.id, saved.savedAt, { paper: resolution.paper, candidates: [], completion: { status: 'queued', updatedAt: Date.now() } });
+            jobs.kick();
+          }
           data = resolution;
           break;
         }
         case 'GET_CACHED': {
           const paper = await getPaper(tab, msg.paperId);
-          data = await deps.getCached(await deps.fingerprint(paper, await deps.readSettings()));
+          data = await cached(paper);
           break;
         }
         case 'GENERATE': {
           const paper = await getPaper(tab, msg.paperId);
-          const { settings, apiKey } = await modelContext();
-          const fingerprint = await deps.fingerprint(paper, settings);
-          const cached = await deps.getCached(fingerprint);
-          if (cached) { data = await updateSavedCopy(paper, cached); break; }
-          if (!generating.has(fingerprint)) {
-            const epoch = cacheEpoch;
-            const generation = (async () => {
-              const result = await deps.generate(paper, settings, apiKey);
-              if (epoch === cacheEpoch) await deps.putCached(result);
-              return updateSavedCopy(paper, result);
-            })();
-            generating.set(fingerprint, generation);
-            void generation.finally(() => generating.delete(fingerprint)).catch(() => {});
-          }
-          data = await generating.get(fingerprint);
+          data = await generate(paper);
           break;
         }
         default: throw new Error('不支持的扩展请求。');
@@ -214,4 +359,5 @@ export function createRouter(deps: RouterDependencies) {
       return { ok: false, error: error instanceof Error ? error.message.slice(0, 300) : '操作失败，请重试。' };
     }
   };
+  return Object.assign(route, { resume: jobs.resume, idle: jobs.idle });
 }

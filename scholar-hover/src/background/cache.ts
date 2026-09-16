@@ -1,13 +1,17 @@
-import { CACHE_MAX, CACHE_TTL } from '../shared/defaults';
-import type { Generated } from '../shared/types';
+import type { Generated, Paper, PaperSeed, Resolution } from '../shared/types';
 import { LANGUAGES, type Language } from '../shared/languages';
+import { previewKey } from '../shared/identity';
+import { createIndexedDBArchive, type ArchiveBackend, type LegacyGeneratedEntry } from './archive';
 
 const CACHE_PREFIX = 'generated:';
-const CACHE_MAX_BYTES = 4 * 1024 * 1024;
-let writes: Promise<void> = Promise.resolve();
+const READ_ERROR = '无法读取本地归档，请重试；现有数据未删除。';
+const WRITE_ERROR = '无法保存本地归档，请检查可用空间后重试；现有数据未删除。';
+const MIGRATION_ERROR = '本地归档迁移未完成，旧数据已保留，请重试。';
+const CLEAR_ERROR = '无法清除本地归档，请重试。';
 
-function cacheKey(fingerprint: string): string {
-  return `${CACHE_PREFIX}${fingerprint}`;
+interface LegacyStorage {
+  read(): Promise<Record<string, unknown>>;
+  remove(keys: string[]): Promise<void>;
 }
 
 function isGenerated(value: unknown): value is Generated {
@@ -19,76 +23,115 @@ function isGenerated(value: unknown): value is Generated {
     && (typeof candidate.summary === 'string' || candidate.summary === null)
     && typeof candidate.model === 'string'
     && typeof candidate.fingerprint === 'string'
-    && typeof candidate.createdAt === 'number';
+    && typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt);
 }
 
-function isExpired(value: Generated, now = Date.now()): boolean {
-  return value.createdAt < now - CACHE_TTL || value.createdAt > now + CACHE_TTL;
+function isPaper(value: unknown): value is Paper {
+  if (!value || typeof value !== 'object') return false;
+  const paper = value as Partial<Paper>;
+  return typeof paper.id === 'string' && typeof paper.title === 'string'
+    && Array.isArray(paper.authors) && paper.authors.every(author => typeof author === 'string')
+    && typeof paper.url === 'string' && typeof paper.sourceUrl === 'string'
+    && ['OpenAlex', 'Crossref', 'Google Scholar'].includes(paper.source ?? '')
+    && ['matched', 'confirmed', 'unresolved'].includes(paper.matchStatus ?? '');
 }
 
-function storedBytes(key: string, value: Generated): number {
-  return new TextEncoder().encode(key).byteLength + new TextEncoder().encode(JSON.stringify(value)).byteLength;
+function isResolution(value: unknown): value is Resolution {
+  if (!value || typeof value !== 'object') return false;
+  const resolution = value as Partial<Resolution>;
+  return isPaper(resolution.paper) && Array.isArray(resolution.candidates) && resolution.candidates.every(isPaper)
+    && (resolution.warning === undefined || typeof resolution.warning === 'string');
 }
 
-function serialWrite(action: () => Promise<void>): Promise<void> {
-  const operation = writes.then(action, action);
-  writes = operation.catch(() => undefined);
-  return operation;
-}
+export function createCache(archive: ArchiveBackend, legacy: LegacyStorage) {
+  let operations: Promise<void> = Promise.resolve();
+  let migrated = false;
 
-async function currentEntries(): Promise<Array<[string, unknown]>> {
-  const all = await chrome.storage.local.get(null);
-  return Object.entries(all).filter(([key]) => key.startsWith(CACHE_PREFIX));
-}
-
-async function pruneAndStore(nextKey?: string, nextValue?: Generated): Promise<void> {
-  const now = Date.now();
-  const entries: Array<[string, Generated]> = [];
-  const remove = new Set<string>();
-  for (const [key, value] of await currentEntries()) {
-    if (isGenerated(value) && !isExpired(value, now) && key === cacheKey(value.fingerprint)) entries.push([key, value]);
-    else remove.add(key);
-  }
-  if (nextKey && nextValue && storedBytes(nextKey, nextValue) <= CACHE_MAX_BYTES) {
-    const existing = entries.findIndex(([key]) => key === nextKey);
-    if (existing >= 0) entries.splice(existing, 1);
-    entries.push([nextKey, nextValue]);
+  function serial<T>(action: () => Promise<T>): Promise<T> {
+    const operation = operations.then(action, action);
+    operations = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
-  entries.sort(([, a], [, b]) => a.createdAt - b.createdAt);
-  let bytes = entries.reduce((total, [key, value]) => total + storedBytes(key, value), 0);
-  while (entries.length > CACHE_MAX || bytes > CACHE_MAX_BYTES) {
-    const [key, value] = entries.shift()!;
-    remove.add(key);
-    bytes -= storedBytes(key, value);
+  async function migrate(): Promise<void> {
+    if (migrated) return;
+    try {
+      const entries: LegacyGeneratedEntry[] = Object.entries(await legacy.read())
+        .filter(([key]) => key.startsWith(CACHE_PREFIX))
+        .map(([key, value]) => ({ key, value, generated: isGenerated(value) && key === `${CACHE_PREFIX}${value.fingerprint}` ? value : undefined }));
+      if (entries.length) {
+        // importLegacy resolves only after the whole IDB transaction commits.
+        // Failed migration leaves the chrome.storage source records intact.
+        await archive.importLegacy(entries);
+        await legacy.remove(entries.map(entry => entry.key));
+      }
+      migrated = true;
+    } catch {
+      throw new Error(MIGRATION_ERROR);
+    }
   }
-  if (remove.size) await chrome.storage.local.remove([...remove]);
-  if (nextKey && nextValue && entries.some(([key]) => key === nextKey)) await chrome.storage.local.set({ [nextKey]: nextValue });
+
+  function read<T>(action: () => Promise<T>): Promise<T> {
+    return serial(async () => {
+      await migrate();
+      try { return await action(); } catch { throw new Error(READ_ERROR); }
+    });
+  }
+
+  function write(action: () => Promise<void>): Promise<void> {
+    return serial(async () => {
+      await migrate();
+      try { await action(); } catch { throw new Error(WRITE_ERROR); }
+    });
+  }
+
+  return {
+    getCached(fingerprint: string): Promise<Generated | undefined> {
+      return read(async () => {
+        const value = await archive.getGenerated(fingerprint);
+        if (value === undefined) return undefined;
+        if (!isGenerated(value) || value.fingerprint !== fingerprint) throw new Error(READ_ERROR);
+        return value;
+      });
+    },
+    putCached(value: Generated): Promise<void> {
+      return write(async () => {
+        if (!isGenerated(value)) throw new Error(WRITE_ERROR);
+        await archive.putGenerated(value);
+      });
+    },
+    getPreview(seed: PaperSeed): Promise<Resolution | undefined> {
+      return read(async () => {
+        const value = await archive.getPreview(previewKey(seed));
+        if (value === undefined) return undefined;
+        if (!isResolution(value)) throw new Error(READ_ERROR);
+        return value;
+      });
+    },
+    putPreview(seed: PaperSeed, resolution: Resolution): Promise<void> {
+      return write(async () => {
+        if (!isResolution(resolution)) throw new Error(WRITE_ERROR);
+        await archive.putPreview(previewKey(seed), resolution);
+      });
+    },
+    clearCache(): Promise<void> {
+      return serial(async () => {
+        try {
+          const keys = Object.keys(await legacy.read()).filter(key => key.startsWith(CACHE_PREFIX));
+          await archive.clear();
+          if (keys.length) await legacy.remove(keys);
+          migrated = true;
+        } catch {
+          throw new Error(CLEAR_ERROR);
+        }
+      });
+    },
+  };
 }
 
-export async function getCached(fingerprint: string): Promise<Generated | undefined> {
-  const key = cacheKey(fingerprint);
-  const result = await chrome.storage.local.get(key);
-  const value = result[key];
-  if (!isGenerated(value) || value.fingerprint !== fingerprint) {
-    if (value !== undefined) await serialWrite(() => pruneAndStore());
-    return undefined;
-  }
-  if (isExpired(value)) {
-    await serialWrite(() => pruneAndStore());
-    return undefined;
-  }
-  return value;
-}
+const cache = createCache(createIndexedDBArchive(), {
+  read: () => chrome.storage.local.get(null),
+  remove: keys => chrome.storage.local.remove(keys),
+});
 
-export async function putCached(value: Generated): Promise<void> {
-  if (!isGenerated(value)) throw new Error('缓存内容无效');
-  await serialWrite(() => pruneAndStore(cacheKey(value.fingerprint), value));
-}
-
-export async function clearCache(): Promise<void> {
-  await serialWrite(async () => {
-    const entries = await currentEntries();
-    if (entries.length) await chrome.storage.local.remove(entries.map(([key]) => key));
-  });
-}
+export const { getCached, putCached, getPreview, putPreview, clearCache } = cache;

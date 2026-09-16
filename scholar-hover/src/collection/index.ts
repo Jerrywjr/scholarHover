@@ -2,7 +2,7 @@ import { rpc } from '../shared/rpc.ts';
 import { buildMarkdown } from '../shared/export.ts';
 import { LANGUAGES, LANGUAGE_NAMES, type Language } from '../shared/languages.ts';
 import { localizeError } from '../shared/errors.ts';
-import type { CollectionSnapshot, ExportBatch, Request, SavedPaper, SettingsView } from '../shared/types.ts';
+import type { CollectionSnapshot, CompletionStatus, ExportBatch, Request, SavedPaper, SettingsView } from '../shared/types.ts';
 import { collectionText, type CollectionMessageKey } from './messages.ts';
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
@@ -34,6 +34,9 @@ export function startCollectionPage(): () => void {
   const status = required('collection-status');
   const count = required('paper-count');
   const empty = required('collection-empty');
+  const completionNotice = element('p', undefined, 'completion-export-notice');
+  completionNotice.id = 'completion-export-notice'; completionNotice.hidden = true;
+  required('preview-details').before(completionNotice);
   let language: Language = 'zh-CN';
   let collection: CollectionSnapshot = { revision: 0, items: [] };
   let exportBatch: ExportBatch | undefined;
@@ -46,6 +49,7 @@ export function startCollectionPage(): () => void {
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let polling = false;
   let exportRequestVersion = 0;
+  let collectionRequestVersion = 0;
   let refreshNeeded = false;
   let pendingRefresh = false;
   const text = (key: CollectionMessageKey, values?: Record<string, string | number>) => collectionText(language, key, values);
@@ -53,6 +57,7 @@ export function startCollectionPage(): () => void {
     status.textContent = message; status.dataset.state = failure ? 'error' : 'ok';
   };
   const pendingDownloads = () => exportBatch !== undefined && [exportBatch.markdown, ...exportBatch.items].some(item => item.state === 'queued' || item.state === 'downloading');
+  const pendingCompletion = () => collection.items.some(item => item.completion && ['queued', 'resolving', 'generating'].includes(item.completion.status));
   const updateControls = () => {
     page.setAttribute('aria-busy', String(busy));
     for (const control of page.querySelectorAll<HTMLButtonElement>('button[data-action]')) {
@@ -84,6 +89,41 @@ export function startCollectionPage(): () => void {
   const appendField = (dl: HTMLDListElement, label: CollectionMessageKey, value: string) => {
     dl.append(element('dt', text(label)), element('dd', value));
   };
+  const completionMessages: Record<CompletionStatus, CollectionMessageKey> = {
+    queued: 'completionQueued', resolving: 'completionResolving', generating: 'completionGenerating', ready: 'completionReady',
+    'needs-confirmation': 'completionConfirmation', 'needs-configuration': 'completionConfiguration', failed: 'completionFailed', interrupted: 'completionInterrupted',
+  };
+  const renderCompletion = (saved: SavedPaper): HTMLElement | undefined => {
+    const progress = saved.completion;
+    if (!progress) return;
+    const panel = element('div', undefined, 'paper-completion'); panel.dataset.completion = progress.status;
+    const state = element('p', text(completionMessages[progress.status]), 'completion-state'); state.setAttribute('role', 'status');
+    panel.append(state);
+    if (progress.error) panel.append(element('p', localizeError(progress.error, language), 'completion-error'));
+    if (progress.status === 'needs-configuration') {
+      const settings = element('a', text('completionSettings'), 'completion-settings'); settings.href = 'options.html';
+      panel.append(settings, element('p', text('completionAfterSettings'), 'hint'));
+    }
+    if (['failed', 'interrupted', 'needs-configuration'].includes(progress.status)) panel.append(button('retry-saved', text('completionRetry'), saved.paper.title));
+    if (progress.status === 'needs-confirmation' && saved.candidates?.length) {
+      panel.append(element('p', text('candidateHint'), 'hint'));
+      const candidates = element('ul', undefined, 'completion-candidates');
+      for (const candidate of saved.candidates) {
+        const item = element('li'); item.dataset.candidateId = candidate.id;
+        item.append(element('p', candidate.title, 'candidate-title'));
+        const metadata = [candidate.authors.join(', '), candidate.year, candidate.venue].filter(Boolean).join(' · ');
+        if (metadata) item.append(element('p', metadata, 'paper-meta'));
+        if (candidate.doi) item.append(element('p', `DOI: ${candidate.doi}`, 'paper-meta'));
+        const actions = element('div', undefined, 'paper-actions');
+        const confirm = button('confirm-saved', text('candidateConfirm'), candidate.title); confirm.dataset.candidateId = candidate.id;
+        actions.append(confirm);
+        const original = safeLink(candidate.url, text('original')); if (original) actions.append(original);
+        item.append(actions); candidates.append(item);
+      }
+      panel.append(candidates);
+    }
+    return panel;
+  };
   const renderPaper = (saved: SavedPaper, index: number, isOpen: boolean): HTMLLIElement => {
     const { paper, generated } = saved;
     const row = element('li', undefined, 'paper-card'); row.dataset.paperId = saved.id;
@@ -99,6 +139,7 @@ export function startCollectionPage(): () => void {
     const metadata = [paper.authors.join(', '), paper.year, paper.venue].filter(Boolean).join(' · ');
     if (metadata) content.append(element('p', metadata, 'paper-meta'));
     if (paper.matchStatus === 'unresolved') content.append(element('p', text('uncertain'), 'uncertain'));
+    const completion = renderCompletion(saved); if (completion) content.append(completion);
     const actions = element('div', undefined, 'paper-actions');
     actions.append(button('up', text('up'), paper.title), button('down', text('down'), paper.title));
     const original = safeLink(paper.url, text('original')); if (original) actions.append(original);
@@ -129,12 +170,18 @@ export function startCollectionPage(): () => void {
     const nextSignature = JSON.stringify([language, collection]);
     count.textContent = text('count', { count: collection.items.length });
     empty.hidden = collection.items.length > 0;
+    const incompleteCount = collection.items.filter(item => item.completion ? item.completion.status !== 'ready' : !item.generated).length;
+    completionNotice.hidden = incompleteCount === 0;
+    completionNotice.textContent = incompleteCount ? text('incompleteExport', { count: incompleteCount }) : '';
     if (nextSignature === collectionSignature) { updateControls(); return; }
     const openItems = new Set(Array.from(list.querySelectorAll<HTMLLIElement>('li')).filter(row => row.querySelector('details')?.open).map(row => row.dataset.paperId));
     const focused = document.activeElement instanceof HTMLElement && list.contains(document.activeElement) ? document.activeElement : undefined;
     const focusId = focused?.closest<HTMLElement>('[data-paper-id]')?.dataset.paperId;
     const focusAction = focused?.dataset.action;
+    const focusCandidateId = focused?.dataset.candidateId;
     const focusSummary = focused?.tagName === 'SUMMARY';
+    const scrollRoot = document.scrollingElement ?? document.documentElement;
+    const scrollTop = scrollRoot.scrollTop;
     list.replaceChildren(...collection.items.map((saved, index) => renderPaper(saved, index, openItems.has(saved.id))));
     const markdown = buildMarkdown(collection.items, language);
     if (preview.value !== markdown) {
@@ -145,11 +192,12 @@ export function startCollectionPage(): () => void {
     updateControls();
     if (focused) {
       const row = Array.from(list.children).find(node => (node as HTMLElement).dataset.paperId === focusId);
-      const replacement = focusSummary ? row?.querySelector('summary') : Array.from(row?.querySelectorAll<HTMLButtonElement>('button') ?? []).find(node => node.dataset.action === focusAction && !node.disabled);
+      const replacement = focusSummary ? row?.querySelector('summary') : Array.from(row?.querySelectorAll<HTMLButtonElement>('button') ?? []).find(node => node.dataset.action === focusAction && node.dataset.candidateId === focusCandidateId && !node.disabled);
       if (replacement instanceof HTMLElement) replacement.focus({ preventScroll: true });
       else if (row) row.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
       else { const heading = required('collection-heading'); heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
     }
+    scrollRoot.scrollTop = scrollTop;
   };
   const renderDownloads = () => {
     const nextSignature = JSON.stringify([language, exportBatch]);
@@ -179,30 +227,44 @@ export function startCollectionPage(): () => void {
   const clearPoll = () => { if (pollTimer !== undefined) clearTimeout(pollTimer); pollTimer = undefined; };
   const schedulePoll = () => {
     clearPoll();
-    if (!stopped && !document.hidden && pendingDownloads()) pollTimer = setTimeout(() => { void poll(); }, 1500);
+    if (!stopped && !document.hidden && (pendingDownloads() || pendingCompletion())) pollTimer = setTimeout(() => { void poll(); }, pendingCompletion() ? 1000 : 1500);
   };
   const poll = async () => {
     if (stopped || document.hidden) return;
-    if (polling || busy) { schedulePoll(); return; }
+    if (polling || busy || dragging) { schedulePoll(); return; }
     polling = true;
-    const requestVersion = ++exportRequestVersion;
+    const readDownloads = pendingDownloads(), readCollection = pendingCompletion();
+    const downloadVersion = readDownloads ? ++exportRequestVersion : exportRequestVersion;
+    const collectionVersion = readCollection ? ++collectionRequestVersion : collectionRequestVersion;
     try {
-      const result = await rpc<ExportBatch | undefined>({ type: 'GET_EXPORT' });
-      if (stopped || requestVersion !== exportRequestVersion) return;
-      exportBatch = result; renderDownloads(); schedulePoll();
-    } catch (error) {
-      if (stopped || requestVersion !== exportRequestVersion) return;
-      announce(localizeError(error instanceof Error ? error.message : '', language), true);
-      // Do not loop forever when the worker cannot be reached. Refresh is explicit.
-      clearPoll();
+      const results = await Promise.allSettled([
+        readDownloads ? rpc<ExportBatch | undefined>({ type: 'GET_EXPORT' }) : Promise.resolve(undefined),
+        readCollection ? rpc<CollectionSnapshot>({ type: 'GET_COLLECTION' }) : Promise.resolve(undefined),
+      ]);
+      if (stopped) return;
+      let error: unknown;
+      if (readDownloads && downloadVersion === exportRequestVersion) {
+        if (results[0].status === 'fulfilled') { exportBatch = results[0].value; renderDownloads(); }
+        else error = results[0].reason;
+      }
+      if (readCollection && collectionVersion === collectionRequestVersion && !busy && !dragging) {
+        if (results[1].status === 'fulfilled' && results[1].value && results[1].value.revision >= collection.revision) { collection = results[1].value; renderCollection(); }
+        else if (results[1].status === 'rejected') error = results[1].reason;
+      }
+      if (error) {
+        announce(localizeError(error instanceof Error ? error.message : '', language), true);
+        // An unreachable worker needs an explicit refresh; never loop calls indefinitely.
+        clearPoll();
+      } else schedulePoll();
     } finally { polling = false; }
   };
   const refresh = async (announceLoading = true) => {
     if (stopped) return;
-    if (busy && !pendingRefresh) { refreshNeeded = true; return; }
+    if (dragging || (busy && !pendingRefresh)) { refreshNeeded = true; return; }
     if (pendingRefresh) return;
     pendingRefresh = true; setBusy(true);
     const requestVersion = ++exportRequestVersion;
+    const collectionVersion = ++collectionRequestVersion;
     if (announceLoading) announce(text('loading'));
     try {
       const results = await Promise.allSettled([
@@ -211,7 +273,7 @@ export function startCollectionPage(): () => void {
       if (stopped) return;
       if (results[0].status === 'fulfilled' && LANGUAGES.includes(results[0].value.uiLanguage)) language = results[0].value.uiLanguage;
       renderLanguage();
-      if (results[1].status === 'fulfilled') { collection = results[1].value; ready = true; renderCollection(); }
+      if (results[1].status === 'fulfilled' && collectionVersion === collectionRequestVersion && results[1].value.revision >= collection.revision) { collection = results[1].value; ready = true; renderCollection(); }
       if (results[2].status === 'fulfilled' && requestVersion === exportRequestVersion) { exportBatch = results[2].value; renderDownloads(); }
       const error = results.find(result => result.status === 'rejected');
       if (error?.status === 'rejected') announce(localizeError(error.reason instanceof Error ? error.reason.message : '', language), true);
@@ -225,13 +287,20 @@ export function startCollectionPage(): () => void {
   const mutate = async (request: Request, progress: CollectionMessageKey, done: CollectionMessageKey) => {
     if (busy || !ready || stopped) return;
     setBusy(true); announce(text(progress));
+    ++collectionRequestVersion;
     // A GET_EXPORT already in flight must not replace a newer retry/export job.
     if (request.type === 'EXPORT_COLLECTION' || request.type === 'RETRY_DOWNLOAD') ++exportRequestVersion;
     try {
-      const result = await rpc<CollectionSnapshot | ExportBatch>(request);
+      const result = await rpc<CollectionSnapshot | ExportBatch | SavedPaper>(request);
       if (stopped) return;
       if (request.type === 'EXPORT_COLLECTION' || request.type === 'RETRY_DOWNLOAD') { exportBatch = result as ExportBatch; renderDownloads(); schedulePoll(); }
-      else { collection = result as CollectionSnapshot; renderCollection(); }
+      else {
+        // Completion jobs also advance the collection revision. Read it after the
+        // mutation rather than using a single-paper response or a stale snapshot.
+        const latest = await rpc<CollectionSnapshot>({ type: 'GET_COLLECTION' });
+        if (stopped) return;
+        collection = latest; renderCollection();
+      }
       announce(text(done));
     } catch (error) {
       if (stopped) return;
@@ -242,7 +311,7 @@ export function startCollectionPage(): () => void {
         collection = latest; renderCollection(); announce(`${message} ${text('refreshAfterError')}`, true);
       } catch { if (!stopped) announce(message, true); }
     } finally {
-      if (!stopped) { setBusy(false); if (refreshNeeded) { refreshNeeded = false; void refresh(false); } }
+      if (!stopped) { setBusy(false); schedulePoll(); if (refreshNeeded) { refreshNeeded = false; void refresh(false); } }
     }
   };
   const reorder = (ids: string[]) => {
@@ -263,6 +332,8 @@ export function startCollectionPage(): () => void {
     }
     const id = target.closest<HTMLElement>('[data-paper-id]')?.dataset.paperId;
     if (!id) return;
+    if (action === 'retry-saved') { void mutate({ type: 'RETRY_SAVED', id }, 'completionRetrying', 'updated'); return; }
+    if (action === 'confirm-saved' && target.dataset.candidateId) { void mutate({ type: 'CONFIRM_SAVED', id, candidateId: target.dataset.candidateId }, 'updating', 'updated'); return; }
     if (action === 'remove') { void mutate({ type: 'REMOVE_SAVED', id, revision: collection.revision }, 'updating', 'updated'); return; }
     if (action === 'up' || action === 'down') {
       const ids = collection.items.map(item => item.id); const index = ids.indexOf(id);
@@ -274,12 +345,18 @@ export function startCollectionPage(): () => void {
   const clearDrag = () => {
     dragging = undefined;
     list.querySelectorAll<HTMLElement>('[data-drop-target], [data-dragging]').forEach(row => { delete row.dataset.dropTarget; delete row.dataset.dragging; });
+    schedulePoll();
+  };
+  const onDragEnd = () => {
+    clearDrag();
+    if (refreshNeeded && !busy) { refreshNeeded = false; void refresh(false); }
   };
   const onDragStart = (event: DragEvent) => {
     if (busy || !(event.target instanceof Element) || !event.target.closest('[data-action="drag"]')) { event.preventDefault(); return; }
     const row = event.target.closest<HTMLElement>('[data-paper-id]');
     if (!row?.dataset.paperId) return;
     dragging = row.dataset.paperId; row.dataset.dragging = 'true';
+    ++collectionRequestVersion;
     event.dataTransfer?.setData('text/plain', dragging);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   };
@@ -312,13 +389,13 @@ export function startCollectionPage(): () => void {
   list.addEventListener('dragstart', onDragStart);
   list.addEventListener('dragover', onDragOver);
   list.addEventListener('drop', onDrop);
-  list.addEventListener('dragend', clearDrag);
+  list.addEventListener('dragend', onDragEnd);
   window.addEventListener('focus', onFocus);
   document.addEventListener('visibilitychange', onVisibility);
   const stop = () => {
     stopped = true; clearPoll();
     page.removeEventListener('click', onClick); list.removeEventListener('dragstart', onDragStart);
-    list.removeEventListener('dragover', onDragOver); list.removeEventListener('drop', onDrop); list.removeEventListener('dragend', clearDrag);
+    list.removeEventListener('dragover', onDragOver); list.removeEventListener('drop', onDrop); list.removeEventListener('dragend', onDragEnd);
     window.removeEventListener('focus', onFocus); window.removeEventListener('pagehide', stop);
     document.removeEventListener('visibilitychange', onVisibility);
   };

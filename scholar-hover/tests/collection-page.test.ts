@@ -13,10 +13,12 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 let stop: (() => void) | undefined;
 function fixture(extra?: (request: Request) => unknown, uiLanguage = 'zh-CN') {
   document.documentElement.innerHTML = new DOMParser().parseFromString(readFileSync('collection.html', 'utf8'), 'text/html').documentElement.innerHTML;
+  let stored = initial();
   const send = vi.fn(async (request: Request) => {
     const override = extra?.(request);
-    if (override !== undefined) return override;
-    return { ok: true, data: request.type === 'GET_SETTINGS' ? { uiLanguage } : request.type === 'GET_COLLECTION' ? initial() : undefined };
+    const response = (override !== undefined ? await override : { ok: true, data: request.type === 'GET_SETTINGS' ? { uiLanguage } : request.type === 'GET_COLLECTION' ? stored : undefined }) as { ok: boolean; data?: CollectionSnapshot };
+    if (response.ok && response.data && Array.isArray(response.data.items) && typeof response.data.revision === 'number') stored = structuredClone(response.data);
+    return response;
   });
   vi.stubGlobal('chrome', { runtime: { sendMessage: send } });
   stop = startCollectionPage();
@@ -29,6 +31,124 @@ function order() { return Array.from(document.querySelectorAll<HTMLElement>('#pa
 afterEach(() => { stop?.(); stop = undefined; document.body.replaceChildren(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('collection manager', () => {
+  it('polls saved-paper progress until ready and updates open details without losing preview position', async () => {
+    vi.useFakeTimers();
+    const saved = paper('a'); saved.completion = { status: 'queued', updatedAt: 1 };
+    let reads = 0;
+    const send = fixture(request => {
+      if (request.type !== 'GET_COLLECTION') return;
+      const next = structuredClone(saved);
+      if (++reads === 2) next.completion!.status = 'generating';
+      if (reads >= 3) { next.completion!.status = 'ready'; next.paper.abstract = 'The completed abstract.'; }
+      return { ok: true, data: { revision: reads, items: [next] } };
+    }); await flush();
+    expect(document.querySelector('[data-paper-id="a"] [data-completion]')?.textContent).toContain('等待补全');
+    document.querySelector<HTMLDetailsElement>('[data-paper-id="a"] details')!.open = true;
+    const preview = document.querySelector<HTMLTextAreaElement>('#markdown-preview')!;
+    preview.scrollTop = 130; preview.setSelectionRange(3, 8);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(document.querySelector('[data-paper-id="a"] [data-completion]')?.textContent).toContain('正在生成');
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(document.querySelector('[data-paper-id="a"]')?.textContent).toContain('The completed abstract.');
+    expect(document.querySelector<HTMLDetailsElement>('[data-paper-id="a"] details')!.open).toBe(true);
+    expect(preview.scrollTop).toBe(130); expect(preview.selectionStart).toBe(3);
+    const count = send.mock.calls.filter(([request]) => request.type === 'GET_COLLECTION').length;
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(send.mock.calls.filter(([request]) => request.type === 'GET_COLLECTION')).toHaveLength(count);
+  });
+
+  it('pauses completion polling in a hidden page and refreshes when visible again', async () => {
+    vi.useFakeTimers();
+    const saved = paper('a'); saved.completion = { status: 'resolving', updatedAt: 1 };
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const send = fixture(request => request.type === 'GET_COLLECTION' ? { ok: true, data: { revision: 1, items: [saved] } } : undefined); await flush();
+    hidden.mockReturnValue(true); document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(send.mock.calls.filter(([request]) => request.type === 'GET_COLLECTION')).toHaveLength(1);
+    hidden.mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange')); await flush();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(send.mock.calls.filter(([request]) => request.type === 'GET_COLLECTION').length).toBeGreaterThan(2);
+  });
+
+  it('defers an in-flight completion update until dragging ends', async () => {
+    vi.useFakeTimers();
+    const oldRead = deferred<unknown>(); let reads = 0;
+    const saved = paper('a'); saved.completion = { status: 'generating', updatedAt: 1 };
+    const finished = paper('a', 'Completed paper'); finished.completion = { status: 'ready', updatedAt: 2 };
+    fixture(request => request.type === 'GET_COLLECTION' ? ++reads === 1 ? { ok: true, data: { revision: 1, items: [saved] } } : reads === 2 ? oldRead.promise : { ok: true, data: { revision: 2, items: [finished] } } : undefined); await flush();
+    await vi.advanceTimersByTimeAsync(1100);
+    const row = document.querySelector('[data-paper-id="a"]');
+    button('drag', 'a').dispatchEvent(new Event('dragstart', { bubbles: true }));
+    oldRead.resolve({ ok: true, data: { revision: 2, items: [finished] } }); await flush();
+    expect(document.querySelector('[data-paper-id="a"]')).toBe(row);
+    expect(row?.textContent).not.toContain('Completed paper');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reads).toBe(2);
+    document.querySelector('#paper-list')!.dispatchEvent(new Event('dragend', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(document.querySelector('[data-paper-id="a"]')?.textContent).toContain('Completed paper');
+  });
+
+  it.each(['failed', 'interrupted', 'needs-configuration'] as const)('retries %s completion explicitly and reloads the collection revision', async completionStatus => {
+    const saved = paper('a'); saved.completion = { status: completionStatus, updatedAt: 1, error: '请先配置模型服务。' };
+    let retried = false;
+    const send = fixture(request => {
+      if (request.type === 'GET_COLLECTION') return { ok: true, data: { revision: retried ? 9 : 1, items: [{ ...saved, completion: { status: retried ? 'queued' : completionStatus, updatedAt: 1 } }] } };
+      if (request.type === 'RETRY_SAVED') { retried = true; return { ok: true, data: saved }; }
+      if (request.type === 'REMOVE_SAVED') return { ok: true, data: { revision: 10, items: [] } };
+    }); await flush();
+    expect(send.mock.calls.some(([request]) => request.type === 'RETRY_SAVED')).toBe(false);
+    if (completionStatus === 'needs-configuration') expect(document.querySelector<HTMLAnchorElement>('[data-paper-id="a"] .completion-settings')?.getAttribute('href')).toBe('options.html');
+    button('retry-saved', 'a').click(); await flush();
+    expect(send.mock.calls).toContainEqual([{ type: 'RETRY_SAVED', id: 'a' }]);
+    expect(document.querySelector('[data-paper-id="a"] [data-completion]')?.textContent).toContain('等待补全');
+    button('remove', 'a').click(); await flush();
+    expect(send.mock.calls).toContainEqual([{ type: 'REMOVE_SAVED', id: 'a', revision: 9 }]);
+  });
+
+  it('shows disambiguation candidates and confirms only the chosen saved-paper match', async () => {
+    const saved = paper('a'); saved.completion = { status: 'needs-confirmation', updatedAt: 1 };
+    saved.candidates = [{ ...paper('candidate').paper, title: 'Candidate original', year: 2023, venue: 'Candidate Journal' }];
+    let confirmed = false;
+    const send = fixture(request => {
+      if (request.type === 'GET_COLLECTION') return { ok: true, data: { revision: confirmed ? 2 : 1, items: [confirmed ? { ...saved, completion: { status: 'generating', updatedAt: 2 }, candidates: [] } : saved] } };
+      if (request.type === 'CONFIRM_SAVED') { confirmed = true; return { ok: true, data: saved }; }
+    }); await flush();
+    const candidate = document.querySelector('[data-candidate-id="candidate"]');
+    expect(candidate?.textContent).toContain('Candidate original');
+    expect(candidate?.textContent).toContain('Candidate Journal');
+    button('confirm-saved', 'a').click(); await flush();
+    expect(send.mock.calls).toContainEqual([{ type: 'CONFIRM_SAVED', id: 'a', candidateId: 'candidate' }]);
+    expect(document.querySelector('[data-candidate-id]')).toBeNull();
+    expect(document.querySelector('[data-paper-id="a"] [data-completion]')?.textContent).toContain('正在生成');
+  });
+
+  it('allows an incomplete export with a persistent notice about the available fields', async () => {
+    const saved = paper('a'); saved.completion = { status: 'needs-confirmation', updatedAt: 1 };
+    const send = fixture(request => request.type === 'GET_COLLECTION' ? { ok: true, data: { revision: 1, items: [saved] } } : request.type === 'EXPORT_COLLECTION' ? { ok: true, data: batch() } : undefined); await flush();
+    expect(document.querySelector('#completion-export-notice')?.textContent).toContain('仅包含导出时已有的信息');
+    expect(button('export').disabled).toBe(false);
+    button('export').click(); await flush();
+    expect(send.mock.calls).toContainEqual([{ type: 'EXPORT_COLLECTION', revision: 1 }]);
+    expect(document.querySelector('#completion-export-notice')?.textContent).toContain('仅包含导出时已有的信息');
+  });
+
+  it('discards an older completion poll after a mutation and keeps the reloaded order', async () => {
+    vi.useFakeTimers();
+    const oldRead = deferred<unknown>(); let reads = 0;
+    const pending = paper('a'); pending.completion = { status: 'generating', updatedAt: 1 };
+    fixture(request => {
+      if (request.type === 'GET_COLLECTION') return ++reads === 1 ? { ok: true, data: { revision: 1, items: [pending, paper('b')] } } : reads === 2 ? oldRead.promise : { ok: true, data: { revision: 3, items: [paper('b')] } };
+      if (request.type === 'REMOVE_SAVED') return { ok: true, data: { revision: 2, items: [paper('b')] } };
+    }); await flush();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(reads).toBe(2);
+    button('remove', 'a').click(); await flush();
+    expect(order()).toEqual(['b']);
+    oldRead.resolve({ ok: true, data: { revision: 2, items: [pending, paper('b')] } }); await flush();
+    expect(order()).toEqual(['b']);
+  });
+
   it.each([['zh-CN', '下载缓存文章'], ['en', 'Download saved papers'], ['fr', 'Télécharger les articles'], ['de', 'Gespeicherte Artikel herunterladen']])('loads the list and export controls in %s', async (language, label) => {
     fixture(undefined, language); await flush();
     expect(document.documentElement.lang).toBe(language);

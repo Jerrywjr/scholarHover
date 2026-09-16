@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCollectionStore } from '../src/background/collection';
-import type { CollectionSnapshot, Generated, Paper } from '../src/shared/types';
+import type { CollectionSnapshot, Generated, Paper, PaperCompletion, PaperSeed } from '../src/shared/types';
 
 const paper = (id = 'one', patch: Partial<Paper> = {}): Paper => ({
   id, title: `Paper ${id}`, authors: ['Alice Chen'], year: 2025, abstract: 'The source abstract.',
@@ -18,7 +18,132 @@ function fixture(initial?: unknown) {
   return { store, write, persisted: () => persisted };
 }
 
+const seed: PaperSeed = { title: 'Scholar result', authors: ['Alice Chen'], url: 'https://example.org/result' };
+const provisional = (): Paper => ({ ...seed, id: 'seed:one', source: 'Google Scholar', sourceUrl: seed.url, matchStatus: 'unresolved' });
+const completion = (status: PaperCompletion['status']): PaperCompletion => ({ status, updatedAt: 1 });
+
 describe('saved paper collection', () => {
+  it('persists detached provisional source context immediately and deduplicates its later enriched paper', async () => {
+    const { store } = fixture();
+    const context = { sourceKey: 'result:one', seed: structuredClone(seed), completion: completion('queued') };
+    const pending = store.save(provisional(), undefined, context);
+    context.seed.title = 'Outside mutation';
+    context.completion.status = 'failed';
+    const saved = await pending;
+    expect(saved).toMatchObject({ id: 'seed:one', sourceKey: 'result:one', seed, completion: { status: 'queued' } });
+    await store.save(paper('two'));
+    const enriched = await store.update(saved.id, saved.savedAt, {
+      paper: paper(), generated: generated(), completion: completion('ready'), candidates: [],
+    });
+    expect(enriched).toMatchObject({ id: 'seed:one', savedAt: saved.savedAt, paper: { id: 'one' }, sourceKey: 'result:one', seed });
+    const repeated = await store.save(provisional(), undefined, { sourceKey: 'result:one', seed, completion: completion('queued') });
+    expect(repeated).toMatchObject({ id: 'seed:one', paper: paper(), generated: generated(), completion: { status: 'ready' } });
+    await store.save(paper());
+    expect((await store.list()).items.map(item => item.id)).toEqual(['seed:one', 'two']);
+    expect((await store.list()).items[0].generated).toEqual(generated());
+  });
+
+  it('keeps an active provisional completion when the same result is saved twice', async () => {
+    const { store } = fixture();
+    const saved = await store.save(provisional(), undefined, { sourceKey: 'result:one', seed, completion: completion('resolving') });
+    const repeated = await store.save(provisional(), undefined, { sourceKey: 'result:one', seed, completion: completion('queued') });
+    expect(repeated).toMatchObject({ id: saved.id, savedAt: saved.savedAt, completion: { status: 'resolving' } });
+    expect((await store.list()).items).toHaveLength(1);
+  });
+
+  it('rejects old completion jobs after deleting and re-saving within the same millisecond', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+    try {
+      const { store } = fixture();
+      const first = await store.save(provisional());
+      await store.remove(first.id, 1);
+      expect(await store.update(first.id, first.savedAt, { paper: paper() })).toBeUndefined();
+      const replacement = await store.save(provisional());
+      expect(replacement.savedAt).not.toBe(first.savedAt);
+      expect(await store.update(first.id, first.savedAt, { paper: paper(), completion: completion('ready') })).toBeUndefined();
+      expect((await store.list()).items).toEqual([replacement]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('serializes detached background patches without losing simultaneous saves', async () => {
+    const { store } = fixture();
+    const first = await store.save(provisional());
+    const patch = { paper: paper(), candidates: [paper('candidate')], completion: completion('needs-confirmation') };
+    const updating = store.update(first.id, first.savedAt, patch);
+    patch.paper.title = 'Outside mutation';
+    patch.candidates[0].title = 'Outside mutation';
+    const saving = store.save(paper('two'));
+    const listing = store.list();
+    await Promise.all([updating, saving]);
+    expect(await listing).toMatchObject({ revision: 3, items: [
+      { id: 'seed:one', paper: { id: 'one', title: 'Paper one' }, candidates: [{ title: 'Paper candidate' }] },
+      { id: 'two' },
+    ] });
+  });
+
+  it('clears stale generation on source changes while retaining it for status-only patches', async () => {
+    const { store } = fixture();
+    const saved = await store.save(provisional());
+    await store.update(saved.id, saved.savedAt, { paper: paper(), generated: generated() });
+    await store.update(saved.id, saved.savedAt, { completion: completion('ready') });
+    expect((await store.list()).items[0].generated).toEqual(generated());
+    await store.update(saved.id, saved.savedAt, { paper: paper('one', { abstract: 'New source abstract' }) });
+    expect((await store.list()).items[0].generated).toBeUndefined();
+    await store.updateGenerated(paper(), generated());
+    expect((await store.list()).items[0].generated).toBeUndefined();
+    await store.updateGenerated(paper('one', { abstract: 'New source abstract' }), generated({ fingerprint: 'new' }));
+    expect((await store.list()).items[0]).toMatchObject({ id: 'seed:one', generated: { fingerprint: 'new' } });
+  });
+
+  it('retains distinct saved identities when enrichment discovers a canonical collision with another version', async () => {
+    const { store } = fixture();
+    const first = await store.save(provisional(), undefined, { sourceKey: 'result:one' });
+    await store.save(paper('one', { preprint: true }), generated());
+    await store.update(first.id, first.savedAt, { paper: paper('one', { preprint: false }) });
+    expect((await store.list()).items).toMatchObject([
+      { id: 'seed:one', paper: { id: 'one', preprint: false } },
+      { id: 'one', paper: { id: 'one', preprint: true }, generated: generated() },
+    ]);
+    expect((await store.list()).items[0].generated).toBeUndefined();
+  });
+
+  it('validates optional source, completion and candidate data without accepting malformed snapshots', async () => {
+    const invalidContexts = [
+      { sourceKey: '' }, { seed: { ...seed, authors: 'wrong' } },
+      { completion: { status: 'unknown', updatedAt: 1 } }, { candidates: [{ id: 'bad' }] },
+    ];
+    for (const context of invalidContexts) {
+      const { store } = fixture();
+      await expect(store.save(provisional(), undefined, context as Parameters<typeof store.save>[2])).rejects.toThrow('缓存文章数据无效');
+      const invalid = fixture({ revision: 1, items: [{ id: 'seed:one', paper: paper(), savedAt: 1, updatedAt: 1, ...context }] });
+      await expect(invalid.store.list()).rejects.toThrow('缓存文章数据无效');
+    }
+    const { store } = fixture();
+    const saved = await store.save(provisional());
+    await expect(store.update(saved.id, saved.savedAt, { completion: { status: 'ready', updatedAt: -1 } })).rejects.toThrow('缓存文章数据无效');
+    await expect(store.update('', saved.savedAt, {})).rejects.toThrow('缓存文章数据无效');
+  });
+
+  it('retains saved seed data after failed enrichment writes and allows the next update', async () => {
+    let persisted: CollectionSnapshot = { revision: 0, items: [] };
+    let fail = false;
+    const store = createCollectionStore({
+      read: async () => structuredClone(persisted),
+      write: async value => { if (fail) throw new Error('storage failed'); persisted = structuredClone(value); },
+    });
+    const saved = await store.save(provisional());
+    fail = true;
+    await expect(store.update(saved.id, saved.savedAt, { paper: paper() })).rejects.toThrow('storage failed');
+    expect((await store.list()).items).toEqual([saved]);
+    fail = false;
+    await expect(store.update(saved.id, saved.savedAt, { paper: paper('one', { abstract: '中'.repeat(1_500_000) }) })).rejects.toThrow('4 MiB');
+    expect((await store.list()).items).toEqual([saved]);
+    await store.update(saved.id, saved.savedAt, { paper: paper(), completion: completion('failed') });
+    expect((await store.list()).items[0]).toMatchObject({ paper: { id: 'one' }, completion: { status: 'failed' } });
+  });
+
   it('preserves first-save order and timestamp on duplicate updates without applying cache expiry', async () => {
     const { store } = fixture();
     const first = await store.save(paper(), generated());
@@ -132,4 +257,14 @@ describe('saved paper collection', () => {
     await store.save(paper('two'));
     expect((await store.list()).items.map(item => item.id)).toEqual(['two']);
   });
+});
+
+it('atomically rejects stale task status and paper writes after the confirmed source changes', async () => {
+  const { store } = fixture();
+  const original = paper('A');
+  const saved = await store.save(original, undefined, { completion: completion('generating') });
+  await store.update(saved.id, saved.savedAt, { paper: paper('B'), completion: completion('queued') });
+  expect(await store.update(saved.id, saved.savedAt, { completion: completion('failed') }, original)).toBeUndefined();
+  expect(await store.update(saved.id, saved.savedAt, { paper: original }, original)).toBeUndefined();
+  expect((await store.list()).items[0]).toMatchObject({ paper: { id: 'B' }, completion: { status: 'queued' } });
 });

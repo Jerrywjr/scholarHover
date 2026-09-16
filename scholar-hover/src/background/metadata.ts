@@ -74,7 +74,7 @@ function stripXml(markup: unknown): string | undefined {
   return text || undefined;
 }
 
-function unresolved(seed: PaperSeed): Paper {
+export function unresolvedPaper(seed: PaperSeed): Paper {
   return {
     ...seed,
     url: safeUrl(seed.url) ?? '',
@@ -218,16 +218,16 @@ export async function resolvePaper(seed: PaperSeed, openAlexKey?: string): Promi
   try {
     body = await requestJson(apiUrl, openAlexKey, timings, 'openalex');
   } catch (error) {
-    return { paper: unresolved(seed), candidates: [], warning: warningFor(error), timings };
+    return { paper: unresolvedPaper(seed), candidates: [], warning: warningFor(error), timings };
   }
 
   if (doi) {
     const work = body && typeof body === 'object' ? body as OpenAlexWork : undefined;
     if (!work || !canUseDoiMatch(seed, work)) {
-      return { paper: unresolved(seed), candidates: [], warning: 'DOI 查询返回了冲突或不完整的记录。', timings };
+      return { paper: unresolvedPaper(seed), candidates: [], warning: 'DOI 查询返回了冲突或不完整的记录。', timings };
     }
     const paper = paperFromWork(work, apiUrl, 'matched', true);
-    if (!paper) return { paper: unresolved(seed), candidates: [], warning: 'DOI 查询返回了格式异常的记录。', timings };
+    if (!paper) return { paper: unresolvedPaper(seed), candidates: [], warning: 'DOI 查询返回了格式异常的记录。', timings };
     if (!paper.abstract) {
       try {
         const abstract = await supplementAbstract(doi, timings);
@@ -267,5 +267,5 @@ export async function resolvePaper(seed: PaperSeed, openAlexKey?: string): Promi
   const candidates = results
     .map((work) => paperFromWork(work, safeUrl(typeof work.id === 'string' ? work.id : undefined) ?? apiUrl, 'unresolved', true))
     .filter((paper): paper is Paper => Boolean(paper));
-  return { paper: unresolved(seed), candidates, warning: candidates.length ? '存在多个或无法验证的候选记录，需要人工确认。' : '未找到可验证的 OpenAlex 匹配记录。', timings };
+  return { paper: unresolvedPaper(seed), candidates, warning: candidates.length ? '存在多个或无法验证的候选记录，需要人工确认。' : '未找到可验证的 OpenAlex 匹配记录。', timings };
 }

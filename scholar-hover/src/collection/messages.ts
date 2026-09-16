@@ -21,6 +21,11 @@ const zh = {
   clearConfirm: '清空本次缓存的所有文章并开始新的检索？已下载的文件不会删除，此操作不可撤销。',
   loadFailed: '无法读取缓存文章，请点击刷新重试。', refreshAfterError: '已重新读取最新列表，请检查后重试。',
   dateUnknown: '时间未知', localNotice: '缓存文章保存在本机，关闭页面后仍保留。清空列表前请先导出需要的内容。',
+  completionQueued: '等待补全信息', completionResolving: '正在核对论文并补全摘要…', completionGenerating: '正在生成译文与摘要要点…', completionReady: '信息已补全',
+  completionConfirmation: '需要确认论文匹配', completionConfiguration: '需要配置模型服务', completionFailed: '信息补全失败', completionInterrupted: '信息补全已中断',
+  completionRetry: '重试补全', completionRetrying: '正在重新提交补全任务…', completionSettings: '打开设置', completionAfterSettings: '完成设置后，点击“重试补全”。',
+  candidateHint: '请核对标题、作者、年份与发表版本，再选择正确的记录。', candidateConfirm: '确认此论文',
+  incompleteExport: '{count} 篇文章的信息尚未补全。仍可导出；文件仅包含导出时已有的信息，不会自动追加后续结果。',
 };
 export type CollectionMessageKey = keyof typeof zh;
 const messages: Record<Language, Record<CollectionMessageKey, string>> = {
@@ -46,6 +51,11 @@ const messages: Record<Language, Record<CollectionMessageKey, string>> = {
     clearConfirm: 'Clear every paper from this collection and start a new search? Downloaded files will stay. This cannot be undone.',
     loadFailed: 'Unable to load saved papers. Select Refresh to try again.', refreshAfterError: 'The latest list has been reloaded. Review it before retrying.',
     dateUnknown: 'Unknown date', localNotice: 'Saved papers stay on this device after you close this page. Export any information you need before clearing the list.',
+    completionQueued: 'Waiting to complete information', completionResolving: 'Verifying the paper and finding its abstract…', completionGenerating: 'Generating translation and key points…', completionReady: 'Information completed',
+    completionConfirmation: 'Paper match needs confirmation', completionConfiguration: 'Model setup required', completionFailed: 'Information completion failed', completionInterrupted: 'Information completion interrupted',
+    completionRetry: 'Retry completion', completionRetrying: 'Submitting completion again…', completionSettings: 'Open settings', completionAfterSettings: 'After setup, select “Retry completion”.',
+    candidateHint: 'Check the title, authors, year and publication version before choosing a record.', candidateConfirm: 'Confirm this paper',
+    incompleteExport: '{count} papers still have incomplete information. You can export the fields available at export time; later results will not be added to that file automatically.',
   },
   fr: {
     pageTitle: 'Scholar Hover · Articles enregistrés', heading: 'Articles de cette recherche', introduction: 'Gardez les articles à lire, puis emportez-les dans l’ordre qui vous convient.',
@@ -68,6 +78,11 @@ const messages: Record<Language, Record<CollectionMessageKey, string>> = {
     clearConfirm: 'Vider tous les articles de cette collection et commencer une nouvelle recherche ? Les fichiers téléchargés seront conservés. Cette action est irréversible.',
     loadFailed: 'Impossible de charger les articles. Cliquez sur Actualiser pour réessayer.', refreshAfterError: 'La liste actuelle a été rechargée. Vérifiez-la avant de réessayer.',
     dateUnknown: 'Date inconnue', localNotice: 'Les articles restent sur cet appareil après la fermeture de la page. Exportez les informations utiles avant de vider la liste.',
+    completionQueued: 'Complément des informations en attente', completionResolving: 'Vérification de l’article et recherche du résumé…', completionGenerating: 'Génération de la traduction et des points clés…', completionReady: 'Informations complétées',
+    completionConfirmation: 'Correspondance à confirmer', completionConfiguration: 'Configuration du modèle requise', completionFailed: 'Échec du complément des informations', completionInterrupted: 'Complément des informations interrompu',
+    completionRetry: 'Réessayer de compléter', completionRetrying: 'Nouvelle demande de complément…', completionSettings: 'Ouvrir les paramètres', completionAfterSettings: 'Après la configuration, sélectionnez « Réessayer de compléter ».',
+    candidateHint: 'Vérifiez le titre, les auteurs, l’année et la version publiée avant de choisir une notice.', candidateConfirm: 'Confirmer cet article',
+    incompleteExport: 'Les informations de {count} articles sont encore incomplètes. Vous pouvez exporter les champs disponibles au moment de l’export ; les résultats ultérieurs ne seront pas ajoutés automatiquement au fichier.',
   },
   de: {
     pageTitle: 'Scholar Hover · Gespeicherte Artikel', heading: 'Artikel aus dieser Suche', introduction: 'Bewahren Sie lesenswerte Artikel auf und nehmen Sie sie in Ihrer eigenen Reihenfolge mit.',
@@ -90,6 +105,11 @@ const messages: Record<Language, Record<CollectionMessageKey, string>> = {
     clearConfirm: 'Alle Artikel aus dieser Sammlung entfernen und eine neue Suche beginnen? Heruntergeladene Dateien bleiben erhalten. Dies kann nicht rückgängig gemacht werden.',
     loadFailed: 'Gespeicherte Artikel konnten nicht geladen werden. Wählen Sie Aktualisieren.', refreshAfterError: 'Die aktuelle Liste wurde neu geladen. Prüfen Sie sie vor einem erneuten Versuch.',
     dateUnknown: 'Unbekanntes Datum', localNotice: 'Gespeicherte Artikel bleiben nach dem Schließen dieser Seite auf diesem Gerät. Exportieren Sie benötigte Angaben, bevor Sie die Liste leeren.',
+    completionQueued: 'Ergänzung der Angaben wartet', completionResolving: 'Artikel wird geprüft und Abstract gesucht…', completionGenerating: 'Übersetzung und Kernaussagen werden erstellt…', completionReady: 'Angaben ergänzt',
+    completionConfirmation: 'Artikelzuordnung muss bestätigt werden', completionConfiguration: 'Modelleinrichtung erforderlich', completionFailed: 'Ergänzung der Angaben fehlgeschlagen', completionInterrupted: 'Ergänzung der Angaben unterbrochen',
+    completionRetry: 'Ergänzung erneut versuchen', completionRetrying: 'Ergänzung wird erneut angefordert…', completionSettings: 'Einstellungen öffnen', completionAfterSettings: 'Wählen Sie nach der Einrichtung „Ergänzung erneut versuchen“.',
+    candidateHint: 'Prüfen Sie Titel, Autoren, Jahr und Veröffentlichungsversion, bevor Sie einen Datensatz auswählen.', candidateConfirm: 'Diesen Artikel bestätigen',
+    incompleteExport: 'Die Angaben zu {count} Artikeln sind noch unvollständig. Sie können die zum Exportzeitpunkt verfügbaren Felder exportieren; spätere Ergebnisse werden der Datei nicht automatisch hinzugefügt.',
   },
 };
 

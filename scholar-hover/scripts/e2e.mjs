@@ -82,11 +82,12 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 server.unref();
 const fixtureOrigin = `http://127.0.0.1:${server.address().port}`;
 const extension = path.resolve('dist');
-const context = await chromium.launchPersistentContext(profile, {
+const launchOptions = {
   channel: 'chromium', headless: true, viewport: { width: 1280, height: 900 },
   acceptDownloads: true, downloadsPath: downloads, ignoreHTTPSErrors: true,
   args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--host-resolver-rules=MAP api.openalex.org 127.0.0.1', '--ignore-certificate-errors'],
-});
+};
+let context = await chromium.launchPersistentContext(profile, launchOptions);
 const checks = [];
 const check = (name, condition) => { assert.ok(condition, name); checks.push(name); };
 const waitUntil = async (predicate, description, timeoutMs = 15000) => {
@@ -104,9 +105,10 @@ try {
   worker.on('close', () => {});
   // Network-only doubles: real packaged content, options, worker, matching, cache and storage execute.
   // Permission grant/denial logic is unit-tested; native permission dialogs remain a manual check.
-  await worker.evaluate(fixtureOrigin => {
+  const installWorkerFixture = target => target.evaluate(fixtureOrigin => {
     globalThis.__requests = [];
     globalThis.__modelFixture = { hold: false, fail: false };
+    globalThis.__metadataFixture = { holdTitle: '' };
     chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://model.test/*' || origin.startsWith('https://api.openalex.org')) ?? false;
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(String(input));
@@ -129,6 +131,9 @@ try {
         return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }), { headers: { 'content-type': 'application/json' } });
       }
       if (url.host === 'api.openalex.org') {
+        if (url.searchParams.get('search') === globalThis.__metadataFixture.holdTitle) {
+          await new Promise(resolve => { globalThis.__releaseMetadata = resolve; });
+        }
         const work = { id: 'https://openalex.org/W1001', title: 'Evidence and uncertainty in measurement', doi: 'https://doi.org/10.1234/evidence', type: 'article', publication_year: 2024,
           authorships: [{ author: { display_name: 'Alice Smith' } }, { author: { display_name: 'Bo Chen' } }],
           primary_location: { source: { display_name: 'Measurement Research' }, landing_page_url: `${fixtureOrigin}/source/evidence`, pdf_url: `${fixtureOrigin}/pdf/evidence.pdf`, version: 'publishedVersion' },
@@ -147,6 +152,8 @@ try {
           'Paper removed from the collection': ['W1003', 'removed'],
           'Paper without a direct PDF': ['W1004', 'missing'],
           'Paper requiring publisher authentication': ['W1005', 'auth'],
+          'Background completed after closing search': ['W1006', 'background'],
+          'Unsaved durable preview': ['W1007', 'unsaved'],
         };
         const extra = extras[url.searchParams.get('search')];
         if (extra) {
@@ -161,6 +168,7 @@ try {
       throw new Error('Test blocked external request');
     };
   }, fixtureOrigin);
+  await installWorkerFixture(worker);
 
   const options = await context.newPage();
   const downloadControl = await context.newCDPSession(options);
@@ -537,6 +545,8 @@ try {
   manager.on('pageerror', error => workerErrors.push(error.message));
   await manager.waitForURL(`chrome-extension://${id}/collection.html`);
   await manager.locator('#paper-list > li').nth(4).waitFor();
+  await waitUntil(async () => (await getCollection()).items.every(item => item.completion?.status === 'ready'), 'saved papers must finish their background completion before export');
+  await manager.locator('.paper-completion[data-completion="ready"]').nth(4).waitFor();
   check('download cached papers opens the collection manager with click order preserved', (await manager.locator('.paper-title').allTextContents()).join('|') === ['Long abstract measurement study', 'Evidence and uncertainty in measurement', ...extraTitles].join('|'));
   const removable = manager.locator('#paper-list > li').filter({ hasText: 'Paper removed from the collection' });
   await removable.locator('[data-action="remove"]').click();
@@ -544,6 +554,9 @@ try {
   check('removing a paper updates both saved collection and manager list', (await getCollection()).items.length === 4 && await manager.locator('#paper-list > li').count() === 4);
   const evidenceRow = manager.locator('#paper-list > li').filter({ hasText: 'Evidence and uncertainty in measurement' }).first();
   const longRow = manager.locator('#paper-list > li').filter({ hasText: 'Long abstract measurement study' }).first();
+  // Removal preserves scroll position. Keep the native drag's destination in
+  // view so Playwright does not scroll the document while the pointer is down.
+  await longRow.scrollIntoViewIfNeeded();
   await evidenceRow.locator('[data-action="drag"]').dragTo(longRow, { targetPosition: { x: 100, y: 12 } });
   await manager.waitForFunction(() => document.querySelector('#paper-list > li .paper-title')?.textContent === 'Evidence and uncertainty in measurement');
   check('native drag reorders cached papers and renumbers the list', (await getCollection()).items[0].paper.title === 'Evidence and uncertainty in measurement' && (await manager.locator('.paper-number').allTextContents()).join(',') === '1,2,3,4');
@@ -600,14 +613,133 @@ try {
   await writeFile(path.join(results, 'native-downloads.json'), JSON.stringify(downloadEvidence, null, 2));
   await manager.screenshot({ path: path.join(results, 'collection-retry-complete.png'), fullPage: true });
 
-  check('no unhandled page errors', workerErrors.length === 0);
+  const addResult = (target, title, slug) => target.evaluate(({ title, slug }) => {
+    const row = document.createElement('div'); row.className = 'gs_r gs_or gs_scl';
+    const heading = document.createElement('h3'); heading.className = 'gs_rt';
+    const link = document.createElement('a'); link.href = `https://example.org/${slug}`; link.textContent = title; heading.append(link);
+    const meta = document.createElement('div'); meta.className = 'gs_a'; meta.textContent = 'A Smith, B Chen - Measurement Research, 2024 - example.org';
+    row.append(heading, meta); document.querySelector('main').append(row);
+  }, { title, slug });
+  const metadataCount = () => worker.evaluate(() => globalThis.__requests.filter(request => request.host === 'api.openalex.org' && !request.path.startsWith('/model-fixture/')).length);
+  const backgroundTitle = 'Background completed after closing search';
+  await worker.evaluate(title => { globalThis.__metadataFixture.holdTitle = title; }, backgroundTitle);
+  modelFixture.hold = true;
+  const backgroundPage = await context.newPage();
+  backgroundPage.on('pageerror', error => workerErrors.push(error.message));
+  await backgroundPage.goto('https://scholar.google.com/scholar?q=background-save');
+  await addResult(backgroundPage, backgroundTitle, 'background');
+  await backgroundPage.getByRole('link', { name: backgroundTitle, exact: true }).hover();
+  const backgroundHost = backgroundPage.locator('#scholar-hover-card');
+  await backgroundHost.locator('[data-action="save"]').waitFor();
+  await waitUntil(() => worker.evaluate(() => typeof globalThis.__releaseMetadata === 'function'), 'metadata lookup must remain held before early save');
+  const earlySaveStarted = Date.now();
+  await backgroundHost.locator('[data-action="save"]').click();
+  await backgroundHost.locator('[data-action="save"]').filter({ hasText: 'Saved' }).waitFor({ timeout: 2500 });
+  const earlySaveMs = Date.now() - earlySaveStarted;
+  const pendingSaved = (await getCollection()).items.find(item => item.paper.title === backgroundTitle);
+  check('saving acknowledges locally while metadata is still blocked', earlySaveMs < 2500 && !!pendingSaved && !pendingSaved.generated && ['queued', 'resolving'].includes(pendingSaved.completion.status));
+  await backgroundPage.close();
+  const beforeBackgroundModel = modelRequests.length;
+  await worker.evaluate(() => { globalThis.__metadataFixture.holdTitle = ''; globalThis.__releaseMetadata(); delete globalThis.__releaseMetadata; });
+  await waitUntil(() => Promise.resolve(modelRequests.length > beforeBackgroundModel), 'background generation must start after the source search page closes');
+  await manager.reload();
+  const backgroundRow = manager.locator('#paper-list > li').filter({ hasText: backgroundTitle });
+  await backgroundRow.locator('[data-completion="generating"]').waitFor();
+  check('manager exposes translation progress after the search page closes', backgroundPage.isClosed() && !await backgroundRow.locator('[data-completion="ready"]').count());
+  modelFixture.hold = false;
+  while (heldModelRequests.length) heldModelRequests.shift()();
+  await backgroundRow.locator('[data-completion="ready"]').waitFor({ timeout: 15000 });
+  const completedSaved = (await getCollection()).items.find(item => item.paper.title === backgroundTitle);
+  check('background completion persists metadata, translation and summary without its search page', completedSaved.completion.status === 'ready' && completedSaved.paper.abstract.includes('120 samples') && completedSaved.generated.abstractTranslated.includes('no significant increase') && !!completedSaved.generated.summary);
+  await manager.screenshot({ path: path.join(results, 'background-save-complete.png'), fullPage: true });
+
+  const unsavedTitle = 'Unsaved durable preview';
+  const unsavedPage = await context.newPage();
+  unsavedPage.on('pageerror', error => workerErrors.push(error.message));
+  await unsavedPage.goto('https://scholar.google.com/scholar?q=unsaved-archive');
+  await addResult(unsavedPage, unsavedTitle, 'unsaved');
+  await unsavedPage.getByRole('link', { name: unsavedTitle, exact: true }).hover();
+  const unsavedHost = unsavedPage.locator('#scholar-hover-card');
+  await unsavedHost.locator('[data-action="generate"]').click();
+  await unsavedHost.locator('.status').filter({ hasText: 'English text generated.' }).waitFor();
+  check('viewed generated paper is archived without explicit saving', !(await getCollection()).items.some(item => item.paper.title === unsavedTitle));
+  const unsavedMetadataCount = await metadataCount();
+  const unsavedModelCount = modelRequests.length;
+  await unsavedPage.close();
+  const revisitPage = await context.newPage();
+  revisitPage.on('pageerror', error => workerErrors.push(error.message));
+  await revisitPage.goto('https://scholar.google.com/scholar?q=unsaved-revisit');
+  await addResult(revisitPage, unsavedTitle, 'unsaved');
+  await revisitPage.getByRole('link', { name: unsavedTitle, exact: true }).hover();
+  const revisitHost = revisitPage.locator('#scholar-hover-card');
+  await revisitHost.getByText('Loaded from local cache.', { exact: true }).waitFor();
+  check('reopening an unsaved preview restores complete output without metadata or model calls', await metadataCount() === unsavedMetadataCount && modelRequests.length === unsavedModelCount && (await revisitHost.locator('details').textContent()).includes('no significant increase'));
+  await revisitPage.close();
+
   const requestLog = [...await worker.evaluate(() => globalThis.__requests), ...modelRequests];
   check('no secret in page DOM', !await page.evaluate(() => document.documentElement.outerHTML.includes('TEST_ONLY_SECRET_NOT_REAL')));
-  check('requests limited to configured providers', requestLog.every(r => r.host === 'model.test' || r.host.startsWith('api.openalex.org')));
   const timings = await worker.evaluate(async () => { const data = await chrome.storage.session.get(['lastModelTiming', 'paperRegistry']); return { model: data.lastModelTiming, metadata: data.paperRegistry?.map(e => e.resolution.timings).filter(Boolean) }; });
   check('provider round-trip diagnostics recorded locally', typeof timings.model?.durationMs === 'number' && timings.metadata.some(t => typeof t.openalex === 'number'));
-  await writeFile(path.join(results, 'e2e.json'), JSON.stringify({ passed: checks, count: checks.length, timestamp: new Date().toISOString(), scope: 'Packaged MV3 extension with metadata/model and permission-boundary doubles; actual Chrome downloads from a loopback PDF/auth fixture into an isolated temporary directory. No real Scholar or paid model calls.', cachedFirstFrame: { count: sorted.length, p95Ms: p95, samplesMs: latencies }, timings, errors: workerErrors }, null, 2));
-  console.log(JSON.stringify({ checks: checks.length, p95Ms: p95, screenshots: ['test-results/options.png', 'test-results/hover-card.png', 'test-results/options-fr.png', 'test-results/options-de.png', 'test-results/hover-card-fr-de.png', 'test-results/manual-generation-pending.png', 'test-results/long-abstract-bottom.png', 'test-results/resized-sidebar.png', 'test-results/manual-generation-failed.png', 'test-results/collection-downloads.png', 'test-results/collection-retry-complete.png'] }));
+  // Restart the whole isolated browser, not just a page: session storage, content
+  // memoization and worker Maps disappear, while the profile's IndexedDB remains.
+  await worker.evaluate(async () => {
+    await chrome.storage.local.set({ 'generated:legacy-browser-migration': {
+      language: 'en', titleTranslated: 'Archived from an older version', abstractTranslated: 'An aged translated abstract.', summary: 'An aged summary.', model: 'legacy-model', fingerprint: 'legacy-browser-migration', createdAt: 1,
+    } });
+  });
+  await context.close();
+  context = await chromium.launchPersistentContext(profile, launchOptions);
+  worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 15000 });
+  assert.equal(new URL(worker.url()).host, id, 'The restarted browser must use the same installed extension and storage origin');
+  await installWorkerFixture(worker);
+  await context.route('https://scholar.google.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
+  const restartedKeys = await worker.evaluate(async () => ({ local: (await chrome.storage.local.get(null)).apiKey, session: (await chrome.storage.session.get(null)).apiKey }));
+  check('real browser restart clears the session API key', restartedKeys.local === undefined && restartedKeys.session === undefined);
+  const restartModelCount = modelRequests.length;
+  const restartedPage = await context.newPage();
+  restartedPage.on('pageerror', error => workerErrors.push(error.message));
+  await restartedPage.goto('https://scholar.google.com/scholar?q=restart-archive');
+  await addResult(restartedPage, unsavedTitle, 'unsaved');
+  const neverViewedTitle = 'Never viewed fixture paper';
+  await addResult(restartedPage, neverViewedTitle, 'never-viewed');
+  await restartedPage.waitForFunction(({ unsavedTitle, neverViewedTitle }) => {
+    const rows = [...document.querySelectorAll('.gs_r.gs_or.gs_scl')];
+    const state = title => rows.find(row => row.querySelector('.gs_rt a')?.textContent === title)?.dataset.scholarHoverState;
+    return state('Evidence and uncertainty in measurement') === 'saved' && state(unsavedTitle) === 'viewed' && state(neverViewedTitle) === 'unviewed';
+  }, { unsavedTitle, neverViewedTitle });
+  const restartedBadges = await restartedPage.evaluate(() => [...document.querySelectorAll('.gs_r.gs_or.gs_scl')].map(row => ({
+    title: row.querySelector('.gs_rt a')?.textContent, state: row.dataset.scholarHoverState, badge: row.querySelector('[data-scholar-hover-badge]')?.textContent,
+  })));
+  check('previously saved paper restores its Saved badge before any hover after restart', restartedBadges.some(row => row.title === 'Evidence and uncertainty in measurement' && row.state === 'saved' && row.badge === 'Saved'));
+  check('unsaved viewed paper restores its Viewed badge before any hover after restart', restartedBadges.some(row => row.title === unsavedTitle && row.state === 'viewed' && row.badge === 'Viewed'));
+  check('new paper retains its Not viewed badge without fetching metadata', restartedBadges.some(row => row.title === neverViewedTitle && row.state === 'unviewed' && row.badge === 'Not viewed'));
+  check('initial badge restoration uses only local records without metadata or model requests', await metadataCount() === 0 && modelRequests.length === restartModelCount);
+  await restartedPage.getByRole('link', { name: unsavedTitle, exact: true }).hover();
+  const restartedHost = restartedPage.locator('#scholar-hover-card');
+  await restartedHost.getByText('Loaded from local cache.', { exact: true }).waitFor();
+  check('real IndexedDB restores an unsaved preview after browser restart without an API key', (await restartedHost.locator('details').textContent()).includes('no significant increase') && await metadataCount() === 0 && modelRequests.length === restartModelCount);
+  const archiveEvidence = await worker.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => { const request = indexedDB.open('scholar-hover-archive', 1); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const records = await new Promise((resolve, reject) => {
+      const tx = db.transaction(['generated', 'previews', 'legacyGenerated'], 'readonly');
+      const legacy = tx.objectStore('generated').get('legacy-browser-migration');
+      const raw = tx.objectStore('legacyGenerated').get('generated:legacy-browser-migration');
+      const generatedCount = tx.objectStore('generated').count();
+      const previewCount = tx.objectStore('previews').count();
+      tx.oncomplete = () => resolve({ legacy: legacy.result, raw: raw.result, generatedCount: generatedCount.result, previewCount: previewCount.result });
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    return { ...records, source: (await chrome.storage.local.get('generated:legacy-browser-migration'))['generated:legacy-browser-migration'] };
+  });
+  check('aged legacy storage results migrate into real IndexedDB without expiry or source loss', archiveEvidence.legacy?.createdAt === 1 && archiveEvidence.legacy?.summary === 'An aged summary.' && archiveEvidence.raw?.value?.fingerprint === 'legacy-browser-migration' && archiveEvidence.source === undefined);
+  check('durable archive retains both generated results and preview metadata', archiveEvidence.generatedCount >= 2 && archiveEvidence.previewCount >= 2);
+  await restartedPage.screenshot({ path: path.join(results, 'restarted-unsaved-preview.png'), fullPage: true });
+  requestLog.push(...await worker.evaluate(() => globalThis.__requests));
+  check('requests limited to configured providers', requestLog.every(r => r.host === 'model.test' || r.host.startsWith('api.openalex.org')));
+  check('no unhandled page errors', workerErrors.length === 0);
+  await writeFile(path.join(results, 'e2e.json'), JSON.stringify({ passed: checks, count: checks.length, timestamp: new Date().toISOString(), scope: 'Packaged MV3 extension with metadata/model and permission-boundary doubles; background completion after closing Scholar, real profile restart and IndexedDB migration, actual Chrome downloads from a loopback PDF/auth fixture into an isolated temporary directory. No real Scholar or paid model calls.', cachedFirstFrame: { count: sorted.length, p95Ms: p95, samplesMs: latencies }, durableArchive: { earlySaveMs, generatedCount: archiveEvidence.generatedCount, previewCount: archiveEvidence.previewCount, migratedCreatedAt: archiveEvidence.legacy.createdAt }, timings, errors: workerErrors }, null, 2));
+  console.log(JSON.stringify({ checks: checks.length, p95Ms: p95, earlySaveMs, screenshots: ['test-results/options.png', 'test-results/hover-card.png', 'test-results/options-fr.png', 'test-results/options-de.png', 'test-results/hover-card-fr-de.png', 'test-results/manual-generation-pending.png', 'test-results/long-abstract-bottom.png', 'test-results/resized-sidebar.png', 'test-results/manual-generation-failed.png', 'test-results/collection-downloads.png', 'test-results/collection-retry-complete.png', 'test-results/background-save-complete.png', 'test-results/restarted-unsaved-preview.png'] }));
 } catch (error) {
   const collectionPage = context.pages().find(page => page.url().endsWith('/collection.html'));
   if (collectionPage) {
@@ -633,6 +765,8 @@ try {
   }
   throw error;
 } finally {
+  modelFixture.hold = false;
+  while (heldModelRequests.length) heldModelRequests.shift()();
   await context.close();
   await new Promise(resolve => server.close(resolve));
   await new Promise(resolve => modelServer.close(resolve));

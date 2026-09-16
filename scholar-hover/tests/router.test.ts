@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRouter, type RouterDependencies } from '../src/background/router';
 import { createCollectionStore } from '../src/background/collection';
-import type { Paper, SettingsView } from '../src/shared/types';
+import { previewKey } from '../src/shared/identity';
+import type { Generated, Paper, Resolution, SettingsView } from '../src/shared/types';
 
 const seed = { title: 'Evidence and uncertainty', authors: ['A Smith'], year: 2024, url: 'https://example.org/paper' };
 const paper: Paper = { ...seed, id: 'W1', source: 'OpenAlex', sourceUrl: 'https://openalex.org/W1', matchStatus: 'matched', abstract: 'No significant increase was observed.' };
@@ -11,15 +12,18 @@ const manager = { id: 'ext', url: 'chrome-extension://ext/collection.html' } as 
 function setup() {
   const session: Record<string, unknown> = {};
   let collectionData: unknown;
+  const previews = new Map<string, Resolution>();
+  const generated = new Map<string, Generated>();
   const settings: SettingsView = { uiLanguage: 'zh-CN', outputLanguage: 'zh-CN', baseUrl: 'https://llm.example/v1', model: 'test', consent: true, rememberKey: false, autoGenerate: true, hasApiKey: true, hasOpenAlexKey: false };
   const deps: RouterDependencies = {
     extensionId: 'ext',
     getSession: async key => session[key], setSession: async (key, value) => { session[key] = value; },
     readSettings: async () => settings, readCredentials: async () => ({ apiKey: 'secret', openAlexKey: '' }),
-    saveSettings: async () => settings, clearKeys: async () => {}, clearCache: async () => {},
+    saveSettings: async () => settings, clearKeys: async () => {}, clearCache: async () => { previews.clear(); generated.clear(); },
+    getPreview: async seed => previews.get(previewKey(seed)), putPreview: async (seed, value) => { previews.set(previewKey(seed), value); },
     resolvePaper: async () => ({ paper, candidates: [] }),
     fingerprint: async p => 'fp:' + p.id,
-    getCached: async () => undefined, putCached: async () => {},
+    getCached: async key => generated.get(key), putCached: async value => { generated.set(value.fingerprint, value); },
     generate: async () => ({ language: 'zh-CN', titleTranslated: '证据与不确定性', abstractTranslated: '未观察到显著增加。', summary: '研究未发现显著增加。', model: 'test', fingerprint: 'fp:W1', createdAt: Date.now() }),
     testConnection: async () => {}, hasPermission: async () => true, openSettings: async () => {},
     openCollection: async () => {},
@@ -140,6 +144,8 @@ describe('worker request boundary', () => {
     deps.getCached = async () => ({ language: 'zh-CN', titleTranslated: '缓存', abstractTranslated: '原摘要译文', summary: '概述', model: 'test', fingerprint: 'fp:W1', createdAt: Date.now() });
     expect(await router({ type: 'GENERATE', paperId: 'W1' }, sender)).toMatchObject({ ok: true, data: { language: 'zh-CN', titleTranslated: '缓存' } });
     deps.hasPermission = async () => false;
+    expect((await router({ type: 'GENERATE', paperId: 'W1' }, sender)).ok).toBe(true);
+    deps.getCached = async () => undefined;
     expect((await router({ type: 'GENERATE', paperId: 'W1' }, sender)).ok).toBe(false);
   });
   it('validates input and only allows exact options page to save settings', async () => {
@@ -194,4 +200,267 @@ describe('worker request boundary', () => {
     await Promise.all([pending, saving]);
     expect(sent).toEqual({ endpoint: 'https://llm.example/v1', apiKey: 'OLD_SECRET' });
   });
+});
+
+describe('durable previews and immediate saved completion', () => {
+  it('acknowledges an unseen seed before metadata or the model complete, then finishes without a page', async () => {
+    const { deps, router } = setup();
+    let resolveMetadata!: (value: Resolution) => void;
+    let resolveModel!: (value: Generated) => void;
+    deps.resolvePaper = vi.fn(() => new Promise<Resolution>(resolve => { resolveMetadata = resolve; }));
+    deps.generate = vi.fn(() => new Promise<Generated>(resolve => { resolveModel = resolve; }));
+    const saved = await router({ type: 'SAVE_PAPER', seed }, sender);
+    expect(saved).toMatchObject({ ok: true, data: { seed, paper: { title: seed.title, source: 'Google Scholar' }, completion: { status: 'queued' } } });
+    await vi.waitFor(() => expect(resolveMetadata).toBeTypeOf('function'));
+    expect(deps.generate).not.toHaveBeenCalled();
+    resolveMetadata({ paper, candidates: [] });
+    await vi.waitFor(() => expect(resolveModel).toBeTypeOf('function'));
+    resolveModel({ language: 'zh-CN', titleTranslated: '后台生成', abstractTranslated: '原文摘要译文', summary: '要点', model: 'test', fingerprint: 'fp:W1', createdAt: 1 });
+    await router.idle();
+    const snapshot = await deps.collection.list();
+    expect(snapshot.items[0]).toMatchObject({ paper: { id: 'W1' }, generated: { titleTranslated: '后台生成' }, completion: { status: 'ready' } });
+    if (saved.ok) expect(snapshot.items[0].id).toBe((saved.data as { id: string }).id);
+    expect(await router({ type: 'GET_PREVIEW', seed }, { ...sender, tab: { id: 2 } } as chrome.runtime.MessageSender)).toMatchObject({ ok: true, data: { generated: { titleTranslated: '后台生成' }, saved: { completion: { status: 'ready' } } } });
+    expect(deps.resolvePaper).toHaveBeenCalledTimes(1);
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('restores an unsaved paid preview after worker restart without network or credentials', async () => {
+    const { deps, router } = setup();
+    await router({ type: 'RESOLVE', seed }, sender);
+    await router({ type: 'GENERATE', paperId: paper.id }, sender);
+    expect((await deps.collection.list()).items).toHaveLength(0);
+    deps.resolvePaper = vi.fn(() => { throw new Error('must not query'); });
+    deps.generate = vi.fn(() => { throw new Error('must not pay again'); });
+    deps.readCredentials = async () => ({ apiKey: '', openAlexKey: '' });
+    deps.hasPermission = async () => false;
+    const restarted = createRouter(deps);
+    const result = await restarted({ type: 'GET_PREVIEW', seed }, { ...sender, tab: { id: 22 } } as chrome.runtime.MessageSender);
+    expect(result).toMatchObject({ ok: true, data: { resolution: { paper }, generated: { titleTranslated: '证据与不确定性' }, saved: undefined } });
+    expect(deps.resolvePaper).not.toHaveBeenCalled();
+    expect(deps.generate).not.toHaveBeenCalled();
+  });
+  it('shares resolution and generation between early saving and an already open preview', async () => {
+    const { deps, router } = setup();
+    deps.resolvePaper = vi.fn(async () => { await new Promise(resolve => setTimeout(resolve, 15)); return { paper, candidates: [] }; });
+    const generate = deps.generate;
+    deps.generate = vi.fn(async (...args: Parameters<RouterDependencies['generate']>) => { await new Promise(resolve => setTimeout(resolve, 20)); return generate(...args); });
+    const lookup = router({ type: 'RESOLVE', seed }, sender);
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await lookup;
+    await router({ type: 'GENERATE', paperId: paper.id }, sender);
+    await router.idle();
+    expect(deps.resolvePaper).toHaveBeenCalledTimes(1);
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router.idle();
+    expect((await deps.collection.list()).items).toHaveLength(1);
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('keeps click order, never starts a deleted queued paper, and never resurrects a deleted running one', async () => {
+    const { deps, router } = setup();
+    let finish!: (value: Resolution) => void;
+    deps.resolvePaper = vi.fn(() => new Promise<Resolution>(resolve => { finish = resolve; }));
+    deps.generate = vi.fn(deps.generate);
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    const second = { ...seed, title: 'Second', url: 'https://example.org/second' };
+    await router({ type: 'SAVE_PAPER', seed: second }, sender);
+    const saved = await deps.collection.list();
+    expect(saved.items.map(item => item.seed?.title)).toEqual([seed.title, 'Second']);
+    await deps.collection.clear(saved.revision);
+    finish({ paper, candidates: [] });
+    await router.idle();
+    expect((await deps.collection.list()).items).toHaveLength(0);
+    expect(deps.resolvePaper).toHaveBeenCalledTimes(1);
+    expect(deps.generate).not.toHaveBeenCalled();
+  });
+  it('pauses ambiguous candidates until explicit manager confirmation', async () => {
+    const { deps, router } = setup();
+    deps.resolvePaper = async () => ({ paper: { ...paper, id: 'source', abstract: undefined, matchStatus: 'unresolved' }, candidates: [paper] });
+    deps.generate = vi.fn(deps.generate);
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router.idle();
+    const item = (await deps.collection.list()).items[0];
+    expect(item.completion?.status).toBe('needs-confirmation');
+    expect(deps.generate).not.toHaveBeenCalled();
+    expect((await router({ type: 'CONFIRM_SAVED', id: item.id, candidateId: paper.id }, sender)).ok).toBe(false);
+    expect((await router({ type: 'CONFIRM_SAVED', id: item.id, candidateId: 'forged' }, manager)).ok).toBe(false);
+    expect((await router({ type: 'CONFIRM_SAVED', id: item.id, candidateId: paper.id }, manager)).ok).toBe(true);
+    await router.idle();
+    expect((await deps.collection.list()).items[0]).toMatchObject({ paper: { id: paper.id, matchStatus: 'confirmed' }, completion: { status: 'ready' } });
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('keeps saved failures without auto retries and allows an explicit retry', async () => {
+    const { deps, router } = setup();
+    const success = deps.generate;
+    deps.generate = vi.fn(async () => { throw new Error('模型暂不可用'); });
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router.idle();
+    const item = (await deps.collection.list()).items[0];
+    expect(item.completion?.status).toBe('failed');
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router({ type: 'GET_PREVIEW', seed }, sender);
+    await router({ type: 'GET_COLLECTION' }, manager);
+    await router.idle();
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+    deps.generate = vi.fn(success);
+    await router({ type: 'RETRY_SAVED', id: item.id }, manager);
+    await router.idle();
+    expect((await deps.collection.list()).items[0].completion?.status).toBe('ready');
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('saves with absent credentials and resumes only on user retry after configuration', async () => {
+    const { deps, router } = setup();
+    deps.readCredentials = async () => ({ apiKey: '', openAlexKey: '' });
+    deps.generate = vi.fn(deps.generate);
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router.idle();
+    const item = (await deps.collection.list()).items[0];
+    expect(item).toMatchObject({ paper: { id: paper.id }, completion: { status: 'needs-configuration' } });
+    expect(deps.generate).not.toHaveBeenCalled();
+    deps.readCredentials = async () => ({ apiKey: 'new-key', openAlexKey: '' });
+    await router({ type: 'RETRY_SAVED', id: item.id }, manager);
+    await router.idle();
+    expect((await deps.collection.list()).items[0].completion?.status).toBe('ready');
+  });
+  it('recovers queued work, but never automatically repeats interrupted paid calls', async () => {
+    const { deps } = setup();
+    const pending = await deps.collection.save(paper, undefined, { seed, completion: { status: 'generating', updatedAt: 1 } });
+    await deps.collection.save({ ...paper, id: 'W2' }, undefined, { seed: { ...seed, title: 'Second' }, completion: { status: 'queued', updatedAt: 1 } });
+    deps.generate = vi.fn(async (value: Paper): Promise<Generated> => ({ language: 'zh-CN', titleTranslated: '恢复队列', abstractTranslated: null, summary: null, model: 'test', fingerprint: 'fp:' + value.id, createdAt: 1 }));
+    const restarted = createRouter(deps);
+    await restarted.resume();
+    await restarted.idle();
+    const items = (await deps.collection.list()).items;
+    expect(items.find(item => item.id === pending.id)?.completion?.status).toBe('interrupted');
+    expect(items[1].completion?.status).toBe('ready');
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+    await restarted.resume();
+    await restarted.idle();
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('retains valid generated output on archive write failure and avoids charging again in this worker', async () => {
+    const { deps, router } = setup();
+    deps.putCached = async () => { throw new Error('Quota exceeded'); };
+    deps.generate = vi.fn(deps.generate);
+    await router({ type: 'RESOLVE', seed }, sender);
+    expect(await router({ type: 'GENERATE', paperId: paper.id }, sender)).toMatchObject({ ok: true, data: { titleTranslated: '证据与不确定性', cacheWarning: expect.any(String) } });
+    expect(await router({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { generated: { titleTranslated: '证据与不确定性', cacheWarning: expect.any(String) } } });
+    await router({ type: 'GENERATE', paperId: paper.id }, sender);
+    expect(deps.generate).toHaveBeenCalledTimes(1);
+  });
+  it('keeps explicitly saved translations available after preview-cache clearing', async () => {
+    const { deps, router } = setup();
+    await router({ type: 'SAVE_PAPER', seed }, sender);
+    await router.idle();
+    await router({ type: 'CLEAR_CACHE' }, options);
+    deps.generate = vi.fn(deps.generate);
+    const restarted = createRouter(deps);
+    expect(await restarted({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { generated: { titleTranslated: '证据与不确定性' }, saved: { completion: { status: 'ready' } } } });
+    await restarted({ type: 'GENERATE', paperId: paper.id }, sender);
+    expect(deps.generate).not.toHaveBeenCalled();
+  });
+});
+
+it('persists an unseen seed even when archive reading is unavailable', async () => {
+  const { deps, router } = setup();
+  deps.getPreview = async () => { throw new Error('无法读取本地归档，请重试；现有数据未删除。'); };
+  expect(await router({ type: 'SAVE_PAPER', seed }, sender)).toMatchObject({ ok: true, data: { seed, completion: { status: 'queued' } } });
+  await router.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ seed, completion: { status: 'failed' } });
+});
+
+it('keeps obsolete generated output archived without marking an empty saved translation ready', async () => {
+  const { deps, router } = setup();
+  let config = { ...await deps.readSettings(), outputLanguage: 'en' as 'en' | 'fr' };
+  deps.readSettings = async () => config;
+  deps.saveSettings = async settings => config = { ...config, ...settings, outputLanguage: settings.outputLanguage as 'en' | 'fr' };
+  deps.fingerprint = async (_paper, settings) => settings.outputLanguage;
+  let done!: (value: Generated) => void;
+  deps.generate = vi.fn(() => new Promise<Generated>(resolve => { done = resolve; }));
+  await router({ type: 'SAVE_PAPER', seed }, sender);
+  await vi.waitFor(() => expect(done).toBeTypeOf('function'));
+  await router({ type: 'SAVE_SETTINGS', settings: { ...config, outputLanguage: 'fr' } }, options);
+  done({ language: 'en', titleTranslated: 'English', abstractTranslated: 'Abstract', summary: 'Summary', model: 'test', fingerprint: 'en', createdAt: 1 });
+  await router.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ completion: { status: 'needs-configuration' }, generated: undefined });
+  expect(await deps.getCached('en')).toMatchObject({ titleTranslated: 'English' });
+});
+
+it('guards cache-hit completion against a concurrent output-language change', async () => {
+  const { deps, router } = setup();
+  let config = { ...await deps.readSettings(), outputLanguage: 'en' as 'en' | 'fr' };
+  deps.readSettings = async () => config;
+  deps.saveSettings = async settings => config = { ...config, ...settings, outputLanguage: settings.outputLanguage as 'en' | 'fr' };
+  deps.fingerprint = async (_paper, settings) => settings.outputLanguage;
+  let release!: (value: Generated) => void;
+  const read = deps.getCached;
+  deps.getCached = async fingerprint => fingerprint === 'en' ? new Promise<Generated>(resolve => { release = resolve; }) : read(fingerprint);
+  deps.generate = async () => ({ language: 'fr', titleTranslated: 'Français', abstractTranslated: 'Résumé', summary: 'Point', model: 'test', fingerprint: 'fr', createdAt: 2 });
+  await router({ type: 'SAVE_PAPER', seed }, sender);
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+  await router({ type: 'SAVE_SETTINGS', settings: { ...config, outputLanguage: 'fr' } }, options);
+  await router({ type: 'GET_PREVIEW', seed }, sender);
+  await router({ type: 'GENERATE', paperId: paper.id }, sender);
+  release({ language: 'en', titleTranslated: 'Old English', abstractTranslated: 'Old', summary: 'Old', model: 'test', fingerprint: 'en', createdAt: 1 });
+  await router.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ completion: { status: 'ready' }, generated: { language: 'fr', titleTranslated: 'Français' } });
+});
+
+it('recovers an already saved paid result without charging again after a mid-commit worker restart', async () => {
+  const { deps } = setup();
+  const output = await deps.generate(paper, await deps.readSettings(), 'test');
+  await deps.collection.save(paper, output, { completion: { status: 'generating', updatedAt: 1 }, seed });
+  deps.generate = vi.fn(deps.generate);
+  const restarted = createRouter(deps);
+  await restarted.resume();
+  await restarted.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ completion: { status: 'ready' }, generated: output });
+  expect(deps.generate).not.toHaveBeenCalled();
+});
+
+it('uses a saved current translation even when IndexedDB becomes unreadable after restart', async () => {
+  const { deps, router } = setup();
+  await router({ type: 'SAVE_PAPER', seed }, sender);
+  await router.idle();
+  deps.getPreview = async () => { throw new Error('Archive unavailable'); };
+  deps.getCached = async () => { throw new Error('Archive unavailable'); };
+  deps.generate = vi.fn(deps.generate);
+  const restarted = createRouter(deps);
+  expect(await restarted({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { generated: { titleTranslated: '证据与不确定性' } } });
+  expect(await restarted({ type: 'GET_CACHED', paperId: paper.id }, sender)).toMatchObject({ ok: true, data: { titleTranslated: '证据与不确定性' } });
+  await restarted({ type: 'GENERATE', paperId: paper.id }, sender);
+  expect(deps.generate).not.toHaveBeenCalled();
+});
+
+it('does not let an older failed request cancel completion for a newly confirmed paper', async () => {
+  const { deps, router } = setup();
+  let rejectOld!: (error: Error) => void;
+  const nextPaper = { ...paper, id: 'W2', title: 'New confirmed paper', matchStatus: 'confirmed' as const };
+  deps.generate = vi.fn(async (value: Paper): Promise<Generated> => value.id === paper.id
+    ? new Promise<Generated>((_resolve, reject) => { rejectOld = reject; })
+    : { language: 'zh-CN', titleTranslated: '新确认的论文', abstractTranslated: '摘要', summary: '概述', model: 'test', fingerprint: 'fp:W2', createdAt: 2 });
+  await router({ type: 'SAVE_PAPER', seed }, sender);
+  await vi.waitFor(() => expect(rejectOld).toBeTypeOf('function'));
+  const item = (await deps.collection.list()).items[0];
+  await deps.collection.update(item.id, item.savedAt, { paper: nextPaper, completion: { status: 'queued', updatedAt: Date.now() + 1 } });
+  rejectOld(new Error('Old request failed'));
+  await router.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ paper: { id: 'W2' }, generated: { titleTranslated: '新确认的论文' }, completion: { status: 'ready' } });
+  expect(deps.generate).toHaveBeenCalledTimes(2);
+});
+
+it('restores result badges from local state without resolving or generating any paper', async () => {
+  const { deps, router } = setup();
+  const seen = { ...seed, title: 'Only viewed', url: 'https://example.org/viewed' };
+  const unseen = { ...seed, title: 'New paper', url: 'https://example.org/new' };
+  await deps.putPreview(seen, { paper: { ...paper, id: 'W2' }, candidates: [] });
+  await deps.collection.save(paper, undefined, { seed, sourceKey: previewKey(seed) });
+  deps.resolvePaper = vi.fn(deps.resolvePaper); deps.generate = vi.fn(deps.generate);
+  expect(await router({ type: 'GET_PREVIEW_STATES', seeds: [seed, seen, unseen] }, sender)).toEqual({ ok: true, data: ['saved', 'viewed', 'unviewed'] });
+  expect(deps.resolvePaper).not.toHaveBeenCalled(); expect(deps.generate).not.toHaveBeenCalled();
+  expect((await router({ type: 'GET_PREVIEW_STATES', seeds: Array(101).fill(seed) }, sender)).ok).toBe(false);
+  expect((await router({ type: 'GET_PREVIEW_STATES', seeds: [seed] }, manager)).ok).toBe(false);
+  deps.getPreview = async () => { throw new Error('Archive unavailable'); };
+  expect(await router({ type: 'GET_PREVIEW_STATES', seeds: [seed, unseen] }, sender)).toEqual({ ok: true, data: ['saved', 'unknown'] });
 });
