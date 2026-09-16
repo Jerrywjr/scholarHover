@@ -6,9 +6,9 @@ The GitHub release is for manual installation and feedback. The extension has no
 
 ## Release artifacts and reproducibility
 
-The repository contains source, English and Chinese documentation, the license, tests, evaluation scaffolding and CI configuration. The extension source lives in `scholar-hover/`. The release ZIP must be built from its matching source tag, with its SHA-256 checksum attached alongside it. Credentials, browser profiles, generated build directories and local test diagnostics are excluded from source control. A release ZIP is an unpacked extension, not a signed store package.
+The repository contains source, English and Chinese documentation, the license, tests, evaluation scaffolding and an inactive CI example. The extension source lives in `scholar-hover/`. The release ZIP must be built from its matching source tag, with its SHA-256 checksum attached alongside it. Credentials, browser profiles, generated build directories and local test diagnostics are excluded from source control. A release ZIP is an unpacked extension, not a signed store package.
 
-The [0.4.0 test report](test-report-0.4.0.md) records the automated checks and their limitations. Reproduction commands are in the [development guide](../README.md#development-and-reproducible-checks). GitHub Actions performs checks only; it contains no automatic release or store-deployment step.
+The [0.4.0 test report](test-report-0.4.0.md) records the local automated checks and their limitations. Reproduction commands are in the [development guide](../README.md#development-and-reproducible-checks). Hosted GitHub Actions is not enabled because the initial publishing credentials lack workflow-writing permission. An authorized maintainer can enable the [workflow example](../../docs/ci/README.md); it performs checks only and contains no automatic release or store-deployment step.
 
 ## Remaining evaluation
 
