@@ -45,6 +45,11 @@ function setup(initial: Record<string, unknown> = {}) {
 describe('durable generated and preview archive', () => {
   let state: ReturnType<typeof setup>;
   beforeEach(() => { state = setup(); });
+  it('persists original-page provenance and permission state across reopening', async () => {
+    const sourced: Resolution = { ...resolution, paper: { ...resolution.paper, source: 'Original page' }, lookupVersion: 2, sourceAccess: { url: seed.url, origin: 'https://example.com' } };
+    await state.cache.putPreview(seed, sourced);
+    expect(await state.reopen().getPreview(seed)).toEqual(sourced);
+  });
 
   it('returns a result only for its exact fingerprint', async () => {
     await state.cache.putCached(generated('one'));

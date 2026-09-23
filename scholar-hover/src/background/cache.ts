@@ -32,7 +32,7 @@ function isPaper(value: unknown): value is Paper {
   return typeof paper.id === 'string' && typeof paper.title === 'string'
     && Array.isArray(paper.authors) && paper.authors.every(author => typeof author === 'string')
     && typeof paper.url === 'string' && typeof paper.sourceUrl === 'string'
-    && ['OpenAlex', 'Crossref', 'Google Scholar'].includes(paper.source ?? '')
+    && ['OpenAlex', 'Crossref', 'Google Scholar', 'Original page'].includes(paper.source ?? '')
     && ['matched', 'confirmed', 'unresolved'].includes(paper.matchStatus ?? '');
 }
 

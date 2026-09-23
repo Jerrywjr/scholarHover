@@ -8,7 +8,7 @@ await mkdir(outDir, { recursive: true });
 await build({ configFile: false, publicDir: false, build: { outDir, emptyOutDir: false, target: 'chrome120', sourcemap: false,
   lib: { entry: 'src/content/index.ts', name: 'ScholarHover', formats: ['iife'], fileName: () => 'content.js' } } });
 await build({ configFile: false, publicDir: 'public', build: { outDir, emptyOutDir: false, target: 'chrome120', sourcemap: false,
-  rollupOptions: { input: { background: path.join(root, 'src/background/index.ts'), options: path.join(root, 'options.html'), collection: path.join(root, 'collection.html'), offscreen: path.join(root, 'offscreen.html') },
+  rollupOptions: { input: { background: path.join(root, 'src/background/index.ts'), options: path.join(root, 'options.html'), collection: path.join(root, 'collection.html'), offscreen: path.join(root, 'offscreen.html'), 'source-access': path.join(root, 'source-access.html') },
     output: { entryFileNames: '[name].js', chunkFileNames: 'chunks/[name]-[hash].js', assetFileNames: 'assets/[name]-[hash][extname]' } } } });
 const manifest = JSON.parse(await readFile('manifest.json', 'utf8'));
 await writeFile(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));

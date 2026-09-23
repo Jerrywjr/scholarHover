@@ -31,6 +31,11 @@ type Active = {
   previewRead?: number;
   saveNotice?: { key: ContentMessageKey; failure: boolean; detail?: string };
   collectionPending?: boolean;
+  metadataPending?: boolean;
+  metadataAttempted?: boolean;
+  needsRefresh?: boolean;
+  sourceAccessPending?: boolean;
+  sourceAccessReturn?: boolean;
 };
 
 type CardFocus =
@@ -140,7 +145,7 @@ function cardButton(label: string, action: string, pressed?: boolean): HTMLButto
 function appendSource(body: HTMLElement, paper: Paper, label: (key: ContentMessageKey) => string, generated?: Generated): void {
   const sources = document.createElement('p');
   sources.className = 'sources';
-  const names = [`${label('source')}: ${paper.source}`];
+  const names = [`${label('source')}: ${paper.source === 'Original page' ? label('originalSource') : paper.source}`];
   if (generated) names.push(`${label('model')}: ${generated.model}`);
   sources.textContent = names.join(' · ');
   if (isSafeUrl(paper.sourceUrl)) {
@@ -154,7 +159,7 @@ function appendSource(body: HTMLElement, paper: Paper, label: (key: ContentMessa
     sources.append(link);
   }
   for (const source of paper.sources ?? []) {
-    const name = source.name === 'Crossref · 摘要' ? label('crossrefAbstract') : source.name;
+    const name = source.name === 'Crossref · 摘要' ? label('crossrefAbstract') : source.name === 'Original page' ? label('originalSource') : source.name;
     sources.append(document.createTextNode(' · '));
     if (isSafeUrl(source.url)) {
       const link = document.createElement('a');
@@ -195,9 +200,19 @@ export function startContentScript(): () => void {
   const label = (key: ContentMessageKey) => contentText(key, preferences.uiLanguage, preferences.outputLanguage);
   const seedKey = (seed: PaperSeed) => JSON.stringify([seed.url, seed.title, seed.authors, seed.year, seed.doi, seed.preprint]);
   const configuration = () => JSON.stringify([preferences.outputLanguage, preferences.baseUrl, preferences.model]);
+  const generationAttempt = (paper: Paper) => JSON.stringify([paper.id, preferences.outputLanguage, preferences.baseUrl, preferences.model]);
+  // Match the cache's paper identity, and distinguish preprint metadata before
+  // retaining an already displayed translation after an explicit source refresh.
+  const outputIdentity = (paper: Paper) => JSON.stringify({
+    id: paper.id, title: paper.title, authors: paper.authors, year: paper.year, venue: paper.venue,
+    url: paper.url, doi: paper.doi, abstract: paper.abstract, source: paper.source, sourceUrl: paper.sourceUrl,
+    preprint: paper.preprint,
+  });
   const validGenerated = (generated: Generated | undefined) => generated?.language === preferences.outputLanguage
     && (!preferences.model || generated.model === preferences.model) ? generated : undefined;
   const completionPending = (saved?: SavedPaper) => saved?.completion && ['queued', 'resolving', 'generating'].includes(saved.completion.status);
+  const resolutionNotice = (resolution: Resolution): ContentMessageKey => resolution.paper.matchStatus !== 'unresolved' ? 'matched'
+    : resolution.candidates.length ? 'uncertain' : resolution.warning ? 'queryFailed' : 'noMatch';
   const completionLabels: Record<CompletionStatus, ContentMessageKey> = {
     queued: 'completionQueued', resolving: 'completionResolving', generating: 'completionGenerating', ready: 'completionReady',
     'needs-confirmation': 'completionConfirm', 'needs-configuration': 'completionConfigure', failed: 'completionFailed', interrupted: 'completionInterrupted',
@@ -255,7 +270,7 @@ export function startContentScript(): () => void {
   };
   const rememberActive = () => {
     if (!active) return;
-    saveMemo(active.seed, { resolution: active.resolution, generated: active.generated, saved: active.saved });
+    saveMemo(active.seed, { resolution: active.resolution, generated: active.generated, saved: active.saved, needsRefresh: active.needsRefresh });
     updateBadges();
   };
   const stopPreviewPoll = () => { if (previewTimer) window.clearTimeout(previewTimer); previewTimer = undefined; };
@@ -338,7 +353,7 @@ export function startContentScript(): () => void {
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-modal', 'false');
     card.setAttribute('aria-labelledby', 'scholar-hover-heading');
-    card.setAttribute('aria-busy', String(!!active.generationPending || !!active.savePending));
+    card.setAttribute('aria-busy', String(!!active.generationPending || !!active.savePending || !!active.metadataPending));
     const head = document.createElement('div'); head.className = 'head';
     const heading = document.createElement('h2'); heading.id = 'scholar-hover-heading'; heading.textContent = active.paper?.title || active.seed.title;
     const titleGroup = document.createElement('div'); titleGroup.className = 'title-group';
@@ -351,7 +366,7 @@ export function startContentScript(): () => void {
     const metadata = [(active.paper?.authors ?? active.seed.authors).join(', '), active.paper?.year ?? active.seed.year ? String(active.paper?.year ?? active.seed.year) : '', active.paper?.venue ?? active.seed.venue ?? ''].filter(Boolean).join(' · ');
     if (metadata) { const p = document.createElement('p'); p.className = 'meta'; p.textContent = metadata; body.append(p); }
     if (active.generated?.titleTranslated) { const p = document.createElement('p'); p.className = 'translated'; p.lang = active.generated.language; p.textContent = active.generated.titleTranslated; body.append(p); }
-    const status = document.createElement('p'); status.className = `status${active.notice?.failure ? ' failure' : ''}`; status.setAttribute('role', 'status'); status.textContent = active.generationPending ? label('generating') : active.notice?.detail ? localizeError(active.notice.detail, preferences.uiLanguage) : label(active.notice?.key ?? (active.paper ? 'matched' : 'resolving'));
+    const status = document.createElement('p'); status.className = `status${active.notice?.failure ? ' failure' : ''}`; status.setAttribute('role', 'status'); status.textContent = active.metadataPending ? label(active.paper ? 'readingAbstract' : 'resolving') : active.generationPending ? label('generating') : active.notice?.detail ? localizeError(active.notice.detail, preferences.uiLanguage) : label(active.notice?.key ?? (active.paper ? 'matched' : 'resolving'));
     if (active.resolution?.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = localizeError(active.resolution.warning, preferences.uiLanguage); body.append(warning); }
     if (active.resolution?.cacheWarning) { const warning = document.createElement('p'); warning.className = 'warning cache-warning'; warning.textContent = localizeError(active.resolution.cacheWarning, preferences.uiLanguage); body.append(warning); }
     if (active.resolution?.candidates.length && active.paper?.matchStatus === 'unresolved' && !active.saved) {
@@ -383,10 +398,20 @@ export function startContentScript(): () => void {
     const footerActions = document.createElement('div'); footerActions.className = 'footer-actions';
     if (active.seed.url && isSafeUrl(active.seed.url)) { const original = document.createElement('a'); original.className = 'original'; original.href = active.seed.url; original.target = '_blank'; original.rel = 'noopener noreferrer'; original.textContent = label('openOriginal'); footerActions.append(original); }
     if (active.paper) footerActions.append(cardButton(label('copy'), 'copy'));
+    if (active.resolution && !active.paper?.abstract) {
+      const retry = cardButton(label(active.metadataPending ? 'readingAbstract' : 'retryMetadata'), 'retry-metadata');
+      retry.disabled = !!active.metadataPending || !!active.savePending || !!completionPending(active.saved);
+      footerActions.append(retry);
+    }
+    if (active.resolution?.sourceAccess) {
+      const access = cardButton(label('sourceAccess'), 'source-access');
+      access.disabled = !!active.sourceAccessPending || !!active.metadataPending;
+      footerActions.append(access);
+    }
     if (active.paper && !active.generated) {
       const generating = !!active.generationPending || !!completionPending(active.saved);
-      const generate = cardButton(label(generating ? 'generating' : active.notice?.failure ? 'retryGenerate' : 'generate'), 'generate');
-      generate.disabled = generating; footerActions.append(generate);
+      const generate = cardButton(label(generating ? 'generating' : failedGenerationAttempts.has(generationAttempt(active.paper)) ? 'retryGenerate' : 'generate'), 'generate');
+      generate.disabled = generating || !!active.metadataPending; footerActions.append(generate);
     }
     footerActions.append(cardButton(label('settings'), 'settings'));
     footer.append(footerActions);
@@ -444,9 +469,9 @@ export function startContentScript(): () => void {
     || !!root.activeElement || resultFor(document.activeElement) === active.element);
   const showGeneration = async (expected: number, paper: Paper, force = false) => {
     const revision = configRevision;
-    const attempt = JSON.stringify([paper.id, preferences.outputLanguage, preferences.baseUrl, preferences.model]);
+    const attempt = generationAttempt(paper);
     const pending = `${revision}:${paper.id}`;
-    if (!generationCurrent(expected, paper, revision) || !active || active.generationPending === pending || failedGenerationAttempts.has(attempt) && !force) return;
+    if (!generationCurrent(expected, paper, revision) || !active || active.metadataPending || active.generationPending === pending || failedGenerationAttempts.has(attempt) && !force) return;
     active.generationPending = pending;
     render('generating');
     try {
@@ -486,7 +511,7 @@ export function startContentScript(): () => void {
   };
 
   const resumeAutomaticGeneration = () => {
-    if (active?.paper && !active.saved && !active.savePending && !active.previewPending && active.paper.matchStatus !== 'unresolved' && !active.generated && !active.generationPending
+    if (active?.paper && !active.saved && !active.savePending && !active.previewPending && !active.metadataPending && active.paper.matchStatus !== 'unresolved' && !active.generated && !active.generationPending
       && !active.outputPending && preferences.autoGenerate && interestedInActive()) void loadOutput(active.token, active.paper);
   };
 
@@ -510,7 +535,7 @@ export function startContentScript(): () => void {
         active.outputPending = undefined;
         active.previewPending = false;
         active.previewRead = ++previewRead;
-        render(active.paper?.matchStatus === 'unresolved' ? 'uncertain' : active.paper ? 'matched' : 'resolving');
+        render(active.resolution ? resolutionNotice(active.resolution) : active.paper ? 'matched' : 'resolving');
         if (!active.paper) void refreshPreview(active.token, active.seed, undefined, true);
         else if (active.saved) void refreshPreview(active.token, active.seed);
         else if (active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(active.token, active.paper, resumeGeneration);
@@ -524,11 +549,12 @@ export function startContentScript(): () => void {
     const resolution = snapshot.resolution ?? (snapshot.saved ? { paper: snapshot.saved.paper, candidates: snapshot.saved.candidates ?? [] } : undefined);
     if (active.saved && !snapshot.saved && !active.savePending && !active.saveNotice?.failure) active.saveNotice = undefined;
     active.saved = snapshot.saved;
+    active.needsRefresh = snapshot.needsRefresh;
     active.savedPaperId = snapshot.saved?.id;
     if (resolution) { active.resolution = resolution; active.paper = resolution.paper; }
     active.generated = validGenerated(snapshot.generated);
     if (active.generated) active.notice = { key: 'cached', failure: false };
-    else if (resolution) active.notice = { key: resolution.paper.matchStatus === 'unresolved' ? 'uncertain' : 'matched', failure: false };
+    else if (resolution) active.notice = { key: resolutionNotice(resolution), failure: resolutionNotice(resolution) === 'queryFailed' };
     if (snapshot.saved && !active.saveNotice?.failure) active.saveNotice = { key: 'saved', failure: false };
     return before !== JSON.stringify([active.resolution, active.generated, active.saved]);
   };
@@ -577,20 +603,34 @@ export function startContentScript(): () => void {
     if (changed) render();
     schedulePreviewPoll();
     if (active.saved || active.savePending) return;
-    if (initial && !snapshot.resolution) void enrich(expected, seed);
+    if (initial && (!snapshot.resolution || snapshot.needsRefresh && !active.paper?.abstract && !active.generated?.abstractTranslated && !active.generated?.summary)) void enrich(expected, seed);
     else if (!active.generated && active.paper && active.paper.matchStatus !== 'unresolved') void loadOutput(expected, active.paper);
   };
-  const enrich = async (expected: number, seed: PaperSeed) => {
+  const enrich = async (expected: number, seed: PaperSeed, retry = false) => {
+    if (!current(expected) || !active || active.metadataPending || active.savePending || completionPending(active.saved) || !retry && active.metadataAttempted) return;
+    const epoch = seedEpoch.get(seedKey(seed)) ?? 0;
+    active.metadataPending = true; active.metadataAttempted = true;
+    render();
     try {
-      const resolution = await rpc<Resolution>({ type: 'RESOLVE', seed });
-      if (!current(expected) || !active || active.saved || active.savePending) return;
+      const resolution = await rpc<Resolution>({ type: 'RESOLVE', seed, ...(retry ? { retry: true } : {}) });
+      if (!current(expected) || !active || active.savePending || (seedEpoch.get(seedKey(seed)) ?? 0) !== epoch || active.saved && !retry) return;
+      const outputChanged = active.paper && outputIdentity(active.paper) !== outputIdentity(resolution.paper);
+      if (outputChanged) {
+        configRevision += 1;
+        active.generated = undefined; active.outputPending = undefined; active.generationPending = undefined;
+      }
+      active.metadataPending = false; active.needsRefresh = false;
       active.resolution = resolution;
       active.paper = resolution.paper;
-      render(resolution.paper.matchStatus === 'unresolved' ? 'uncertain' : 'matched');
+      const notice = resolutionNotice(resolution);
+      render(notice, notice === 'queryFailed');
+      if (active.saved) { void refreshPreview(expected, seed); return; }
       if (resolution.paper.matchStatus === 'unresolved') return;
-      void loadOutput(expected, resolution.paper);
+      if (!active.generated) void loadOutput(expected, resolution.paper, false);
     } catch (error) {
-      if (current(expected)) render('queryFailed', true, error instanceof Error ? error.message : undefined);
+      if (current(expected) && active) { active.metadataPending = false; render('queryFailed', true, error instanceof Error ? error.message : undefined); }
+    } finally {
+      if (current(expected) && active?.metadataPending) { active.metadataPending = false; render(); }
     }
   };
 
@@ -683,6 +723,17 @@ export function startContentScript(): () => void {
       }); return;
     }
     if (button.dataset.action === 'settings') { void rpc<void>({ type: 'OPEN_SETTINGS' }).catch(() => render('settingsFailed', true)); return; }
+    if (button.dataset.action === 'retry-metadata') { void enrich(expected, active.seed, true); return; }
+    if (button.dataset.action === 'source-access' && active.resolution?.sourceAccess) {
+      active.sourceAccessPending = true; render();
+      void rpc<void>({ type: 'OPEN_SOURCE_ACCESS', seed: active.seed }).then(() => {
+        if (!current(expected) || !active) return;
+        active.sourceAccessPending = false; active.sourceAccessReturn = true; render('sourceAccessOpened');
+      }).catch(error => {
+        if (!current(expected) || !active) return;
+        active.sourceAccessPending = false; render('sourceAccessFailed', true, error instanceof Error ? error.message : undefined);
+      }); return;
+    }
     if (button.dataset.action === 'generate' && active.paper) {
       pinPanel();
       void showGeneration(expected, active.paper, true); return;
@@ -737,7 +788,13 @@ export function startContentScript(): () => void {
     }
   };
   const onResize = () => { if (active) positionPanel(); };
-  const onWindowFocus = () => { requestBadgeStates(true); settingsReady = refreshSettings(); void settingsReady.then(() => { if (active?.saved) void refreshPreview(active.token, active.seed); }); };
+  const onWindowFocus = () => {
+    requestBadgeStates(true); settingsReady = refreshSettings();
+    void settingsReady.then(() => {
+      if (active?.sourceAccessReturn) { active.sourceAccessReturn = false; void enrich(active.token, active.seed, true); }
+      else if (active?.saved) void refreshPreview(active.token, active.seed);
+    });
+  };
   settingsReady = refreshSettings();
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('resize', onResize);

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="pageTitle">知阅 · 原文网站访问</title>
+  </head>
+  <body>
+    <main>
+      <header><p class="brand">知阅 Scholar Hover</p><h1 data-i18n="heading">读取论文原文摘要</h1></header>
+      <section aria-labelledby="website-heading">
+        <h2 id="website-heading" data-i18n="website">请求访问的网站</h2>
+        <p id="source-origin" class="origin"></p>
+        <p id="source-url" class="url"></p>
+        <p data-i18n="explanation">允许扩展读取此网站的公开论文页面，提取标题和摘要。权限仅覆盖上方网站，可在浏览器扩展设置中撤销。</p>
+        <p class="hint" data-i18n="instructions">授权后请返回搜索结果，扩展会重新读取这篇论文的摘要。</p>
+        <button id="grant-access" type="button" data-i18n="grant" disabled>允许读取此网站</button>
+        <p id="access-status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script type="module" src="/src/source-access/index.ts"></script>
+  </body>
+</html>

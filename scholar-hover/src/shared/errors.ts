@@ -74,6 +74,13 @@ const messages = [
   ['响应正文不可读取', 'The response body cannot be read.', 'Le corps de la réponse est illisible.', 'Der Antwortinhalt kann nicht gelesen werden.'],
   ['请求超时', 'Request timed out.', 'Délai de requête dépassé.', 'Zeitüberschreitung der Anfrage.'],
   ['未知网络错误', 'Network or response error.', 'Erreur réseau ou de réponse.', 'Netzwerk- oder Antwortfehler.'],
+  ['原文网站访问权限未授予，请允许读取原文网站。', 'Source website access is not granted. Allow access to read the source page.', 'L’accès au site original n’est pas autorisé. Autorisez l’accès pour lire la page originale.', 'Der Zugriff auf die Originalwebsite ist nicht erlaubt. Erlauben Sie den Zugriff, um die Originalseite zu lesen.'],
+  ['原文解析失败，请重新读取摘要。', 'The source page could not be parsed. Read the abstract again.', 'La page originale n’a pas pu être analysée. Relancez la lecture du résumé.', 'Die Originalseite konnte nicht ausgewertet werden. Lesen Sie den Abstract erneut ein.'],
+  ['原文链接未返回可读取的摘要网页。', 'The source link did not return a readable abstract page.', 'Le lien original n’a pas renvoyé de page de résumé lisible.', 'Der Originallink hat keine lesbare Abstractseite zurückgegeben.'],
+  ['原文链接发生跳转，请打开原文页面查看。', 'The source link redirected. Open the source page to inspect it.', 'Le lien original a été redirigé. Ouvrez la page originale pour la consulter.', 'Der Originallink wurde umgeleitet. Öffnen Sie die Originalseite zur Überprüfung.'],
+  ['原文页面未提供可核验的论文信息，可能需要登录或验证。', 'The source page did not provide verifiable paper information. Sign-in or verification may be required.', 'La page originale n’a pas fourni d’informations vérifiables sur l’article. Une connexion ou une vérification peut être nécessaire.', 'Die Originalseite enthielt keine überprüfbaren Artikeldaten. Eine Anmeldung oder Verifizierung kann erforderlich sein.'],
+  ['原文页面未提供完整摘要。', 'The source page did not provide a complete abstract.', 'La page originale n’a pas fourni de résumé complet.', 'Die Originalseite enthielt keinen vollständigen Abstract.'],
+  ['无法读取原文网页，请打开原文页面检查网络、跳转或访问限制。', 'Cannot read the source page. Open it to check the network, redirects or access restrictions.', 'Impossible de lire la page originale. Ouvrez-la pour vérifier le réseau, les redirections ou les restrictions d’accès.', 'Die Originalseite kann nicht gelesen werden. Öffnen Sie sie, um Netzwerk, Weiterleitungen oder Zugriffsbeschränkungen zu prüfen.'],
   ['DOI 查询返回了冲突或不完整的记录。', 'The DOI lookup returned a conflicting or incomplete record.', 'La recherche DOI a renvoyé une notice contradictoire ou incomplète.', 'Die DOI-Abfrage lieferte einen widersprüchlichen oder unvollständigen Datensatz.'],
   ['DOI 查询返回了格式异常的记录。', 'The DOI lookup returned a malformed record.', 'La recherche DOI a renvoyé une notice mal formée.', 'Die DOI-Abfrage lieferte einen fehlerhaften Datensatz.'],
   ['存在多个或无法验证的候选记录，需要人工确认。', 'Multiple or unverified candidates require your confirmation.', 'Plusieurs notices ou des notices non vérifiées nécessitent votre confirmation.', 'Mehrere oder ungeprüfte Vorschläge müssen von Ihnen bestätigt werden.'],
@@ -82,25 +89,31 @@ const messages = [
 ] as const;
 const languageIndex: Record<Language, number> = { 'zh-CN': 0, en: 1, fr: 2, de: 3 };
 const byMessage = new Map<string, readonly string[]>(messages.map(row => [row[0], row]));
+const prefixes = [
+  ['OpenAlex 已匹配，但', 'OpenAlex matched, but ', 'Correspondance OpenAlex trouvée, mais ', 'OpenAlex-Zuordnung gefunden, aber '],
+  ['元数据查询失败：', 'Metadata lookup failed: ', 'Échec de la recherche de métadonnées : ', 'Metadatenabfrage fehlgeschlagen: '],
+  ['原文读取失败：', 'Source page read failed: ', 'Échec de lecture de la page originale : ', 'Lesen der Originalseite fehlgeschlagen: '],
+  ['OpenAlex 查询失败：', 'OpenAlex lookup failed: ', 'Échec de la recherche OpenAlex : ', 'OpenAlex-Abfrage fehlgeschlagen: '],
+  ['Crossref 查询失败：', 'Crossref lookup failed: ', 'Échec de la recherche Crossref : ', 'Crossref-Abfrage fehlgeschlagen: '],
+] as const;
 
 export function localizeError(message: string, language: Language): string {
   const index = languageIndex[language] ?? 0;
-  const known = byMessage.get(message);
-  if (known) return known[index]
-    .replace('完整中文题目', '完整题目译文')
-    .replace('完整中文摘要', '完整摘要译文');
-  const matchedPrefix = 'OpenAlex 已匹配，但';
-  if (message.startsWith(matchedPrefix)) {
-    const prefix = ['OpenAlex 已匹配，但', 'OpenAlex matched, but ', 'Correspondance OpenAlex trouvée, mais ', 'OpenAlex-Zuordnung gefunden, aber '][index];
-    return prefix + localizeError(message.slice(matchedPrefix.length), language);
-  }
-  const metadataPrefix = '元数据查询失败：';
-  if (message.startsWith(metadataPrefix)) {
-    const prefix = ['元数据查询失败：', 'Metadata lookup failed: ', 'Échec de la recherche de métadonnées : ', 'Metadatenabfrage fehlgeschlagen: '][index];
-    const detail = message.slice(metadataPrefix.length);
-    const safeDetail = /^HTTP [1-5]\d\d$/.test(detail) ? detail
-      : (byMessage.get(detail) ?? byMessage.get('未知网络错误')!)[index];
-    return prefix + safeDetail;
-  }
-  return byMessage.get('操作失败，请重试。')![index];
+  const translate = (value: string, depth: number, detail = false): string => {
+    const fallback = byMessage.get(detail ? '未知网络错误' : '操作失败，请重试。')![index];
+    if (depth > 8) return fallback;
+    const known = byMessage.get(value);
+    if (known) return known[index]
+      .replace('完整中文题目', '完整题目译文')
+      .replace('完整中文摘要', '完整摘要译文');
+    if (/^HTTP [1-5]\d\d$/.test(value)) return value;
+    // Match complete known diagnostics before splitting: several existing
+    // messages contain their own semicolon. Every unknown part stays sanitized.
+    const parts = value.split('；');
+    if (parts.length > 1) return parts.slice(0, 8).map(part => translate(part, depth + 1, detail))
+      .join(index === 0 ? '；' : index === 2 ? ' ; ' : '; ');
+    const prefix = prefixes.find(entry => value.startsWith(entry[0]));
+    return prefix ? prefix[index] + translate(value.slice(prefix[0].length), depth + 1, true) : fallback;
+  };
+  return translate(message, 0);
 }

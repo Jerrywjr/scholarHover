@@ -203,6 +203,56 @@ describe('worker request boundary', () => {
 });
 
 describe('durable previews and immediate saved completion', () => {
+  it.each([false, true])('keeps a paid title after failed refresh, with saved-only fallback=%s', async savedOnly => {
+    const { deps, router } = setup();
+    const original: Paper = { ...paper, abstract: undefined, matchStatus: savedOnly ? 'confirmed' : 'matched' };
+    const title = { ...await deps.generate(original, await deps.readSettings(), 'fake'), abstractTranslated: null, summary: null };
+    if (savedOnly) await deps.collection.save(original, title, { seed, sourceKey: previewKey(seed), completion: { status: 'ready', updatedAt: 1 } });
+    else { await deps.putPreview(seed, { paper: original, candidates: [], lookupVersion: 2 }); await deps.putCached(title); }
+    deps.resolvePaper = async () => ({ paper: { ...original, id: 'scholar:failed', source: 'Google Scholar', matchStatus: 'unresolved' }, candidates: [], warning: '原文读取失败：HTTP 503', lookupVersion: 2 });
+    expect(await router({ type: 'RESOLVE', seed, retry: true }, sender)).toMatchObject({ ok: true, data: { paper: { id: paper.id, matchStatus: original.matchStatus }, lookupVersion: 2 } });
+    expect(await router({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { generated: title, needsRefresh: false } });
+  });
+  it('marks an old failed preview for refresh without querying during a local read', async () => {
+    const { deps, router } = setup();
+    await deps.putPreview(seed, { paper: { ...paper, abstract: undefined, source: 'Google Scholar', matchStatus: 'unresolved' }, candidates: [], warning: '元数据查询失败：HTTP 429' });
+    deps.resolvePaper = vi.fn(async (): Promise<Resolution> => ({ paper: { ...paper, source: 'Original page' }, candidates: [], lookupVersion: 2 }));
+    expect(await router({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { needsRefresh: true } });
+    expect(deps.resolvePaper).not.toHaveBeenCalled();
+    expect(await router({ type: 'RESOLVE', seed }, sender)).toMatchObject({ ok: true, data: { lookupVersion: 2, paper: { abstract: paper.abstract, source: 'Original page' } } });
+    expect(await router({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { needsRefresh: false } });
+  });
+  it('explicitly refreshes missing source abstracts and synchronizes an already saved paper', async () => {
+    const { deps, router } = setup();
+    const incomplete: Paper = { ...paper, abstract: undefined };
+    await deps.putPreview(seed, { paper: incomplete, candidates: [], lookupVersion: 2 });
+    const saved = await deps.collection.save(incomplete, undefined, { seed, sourceKey: previewKey(seed), completion: { status: 'failed', updatedAt: 1 } });
+    deps.resolvePaper = vi.fn(async (): Promise<Resolution> => ({ paper: { ...paper, source: 'Original page' }, candidates: [], lookupVersion: 2 }));
+    await router({ type: 'RESOLVE', seed, retry: true }, sender);
+    expect(deps.resolvePaper).toHaveBeenCalledTimes(1);
+    expect((await deps.collection.list()).items[0]).toMatchObject({ id: saved.id, paper: { source: 'Original page', abstract: paper.abstract } });
+    await router.idle();
+  });
+  it('retains a usable cached abstract and paid translation when explicit refresh fails', async () => {
+    const { deps, router } = setup();
+    await router({ type: 'RESOLVE', seed }, sender);
+    await router({ type: 'GENERATE', paperId: paper.id }, sender);
+    deps.resolvePaper = async () => ({ paper: { ...paper, abstract: undefined, matchStatus: 'unresolved' }, candidates: [], warning: '原文读取失败：HTTP 503', lookupVersion: 2 });
+    expect(await router({ type: 'RESOLVE', seed, retry: true }, sender)).toMatchObject({ ok: true, data: { paper: { abstract: paper.abstract } } });
+    expect(await router({ type: 'GET_PREVIEW', seed }, sender)).toMatchObject({ ok: true, data: { generated: { titleTranslated: '证据与不确定性' } } });
+  });
+  it('opens source permission only for a registered source-access requirement', async () => {
+    const { deps, router } = setup();
+    deps.openSourceAccess = vi.fn(async () => {});
+    expect((await router({ type: 'OPEN_SOURCE_ACCESS', seed }, sender)).ok).toBe(false);
+    deps.resolvePaper = async () => ({ paper, candidates: [], sourceAccess: { url: seed.url, origin: 'https://example.org' } });
+    await router({ type: 'RESOLVE', seed }, sender);
+    expect((await router({ type: 'OPEN_SOURCE_ACCESS', seed }, sender)).ok).toBe(true);
+    expect(deps.openSourceAccess).toHaveBeenCalledWith(seed.url);
+    const readerPage = { id: 'ext', url: 'chrome-extension://ext/source-access.html#https%3A%2F%2Fexample.org' } as chrome.runtime.MessageSender;
+    expect((await router({ type: 'GET_SETTINGS' }, readerPage)).ok).toBe(true);
+    expect((await router({ type: 'CLEAR_KEYS' }, readerPage)).ok).toBe(false);
+  });
   it('acknowledges an unseen seed before metadata or the model complete, then finishes without a page', async () => {
     const { deps, router } = setup();
     let resolveMetadata!: (value: Resolution) => void;

@@ -3,7 +3,7 @@ import type { createCollectionStore } from './collection';
 
 interface Dependencies {
   collection: ReturnType<typeof createCollectionStore>;
-  resolve(seed: PaperSeed): Promise<Resolution>;
+  resolve(seed: PaperSeed, retry?: boolean): Promise<Resolution>;
   cached(paper: Paper): Promise<Generated | undefined>;
   generate(paper: Paper): Promise<Generated>;
   finish(item: SavedPaper, paper: Paper, generated: Generated): Promise<void>;
@@ -13,8 +13,8 @@ export function createCompletionQueue(deps: Dependencies) {
   let running: Promise<void> | undefined;
   let recovery: Promise<void> | undefined;
   let requested = false;
-  const status = (value: CompletionStatus, error?: string) =>
-    ({ status: value, updatedAt: Date.now(), ...(error ? { error } : {}) });
+  const status = (value: CompletionStatus, error?: string, refreshMetadata?: boolean) =>
+    ({ status: value, updatedAt: Date.now(), ...(error ? { error } : {}), ...(refreshMetadata ? { refreshMetadata } : {}) });
   async function process(item: SavedPaper) {
     let expectedPaper = item.paper;
     const update = async (patch: Parameters<typeof deps.collection.update>[2]) => {
@@ -24,9 +24,9 @@ export function createCompletionQueue(deps: Dependencies) {
     };
     try {
       let paper = item.paper;
-      if (paper.matchStatus === 'unresolved') {
-        if (!await update({ completion: status('resolving') })) return;
-        const resolution = await deps.resolve(item.seed ?? paper);
+      if (paper.matchStatus === 'unresolved' || !paper.abstract) {
+        if (!await update({ completion: status('resolving', undefined, item.completion?.refreshMetadata) })) return;
+        const resolution = await deps.resolve(item.seed ?? paper, item.completion?.refreshMetadata === true);
         paper = resolution.paper;
         if (!await update({ paper, candidates: resolution.candidates })) return;
         if (resolution.candidates.length) {
@@ -34,7 +34,8 @@ export function createCompletionQueue(deps: Dependencies) {
         }
         // Provider failures should not turn an incomplete seed into a successful
         // title-only job. The user can retry the failed metadata lookup.
-        if (resolution.warning && paper.matchStatus === 'unresolved') {
+        if (resolution.warning && !paper.abstract && (paper.matchStatus === 'unresolved'
+          || /查询失败|读取失败|访问权限未授予/.test(resolution.warning))) {
           await update({ completion: status('failed', resolution.warning) }); return;
         }
       }
@@ -76,7 +77,7 @@ export function createCompletionQueue(deps: Dependencies) {
         const cached = previous === 'generating' ? await deps.cached(item.paper).catch(() => undefined) : undefined;
         if (cached) await deps.finish(item, item.paper, cached);
         else await deps.collection.update(item.id, item.savedAt, { completion: previous === 'generating'
-          ? status('interrupted', '后台任务已中断，请手动重试；上次模型请求可能已计费。') : status('queued') });
+          ? status('interrupted', '后台任务已中断，请手动重试；上次模型请求可能已计费。') : status('queued', undefined, item.completion?.refreshMetadata) });
       }
       kick();
     })();

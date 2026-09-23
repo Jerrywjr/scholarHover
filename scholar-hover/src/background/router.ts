@@ -4,6 +4,7 @@ import type { createExportManager } from './downloads';
 import { previewKey } from '../shared/identity';
 import { createCompletionQueue } from './completion';
 import { unresolvedPaper } from './metadata';
+import { normalizeSourceUrl } from '../shared/source-page';
 
 export interface RouterDependencies {
   extensionId: string;
@@ -25,6 +26,7 @@ export interface RouterDependencies {
   hasPermission(origin: string): Promise<boolean>;
   openSettings(): Promise<void>;
   openCollection(): Promise<void>;
+  openSourceAccess?(url: string): Promise<void>;
   collection: ReturnType<typeof createCollectionStore>;
   exports: ReturnType<typeof createExportManager>;
 }
@@ -121,16 +123,29 @@ export function createRouter(deps: RouterDependencies) {
     try { await deps.putPreview(seed, resolution); }
     catch { resolution.cacheWarning = '无法保存本地归档，请检查可用空间后重试；现有数据未删除。'; }
   }
-  async function resolve(seed: PaperSeed): Promise<Resolution> {
+  function needsSourceRefresh(seed: PaperSeed, resolution?: Resolution): boolean {
+    return Boolean(resolution && resolution.lookupVersion !== 2 && !resolution.paper.abstract
+      && resolution.paper.matchStatus !== 'confirmed' && !resolution.candidates.length && normalizeSourceUrl(seed.url));
+  }
+  async function resolve(seed: PaperSeed, retry = false): Promise<Resolution> {
     const key = previewKey(seed);
-    const existing = await archived(seed);
+    let existing = await archived(seed);
+    if (!existing) {
+      const saved = await findSaved(seed);
+      if (saved) existing = { paper: saved.paper, candidates: saved.candidates ?? [] };
+    }
     // Preserve every loaded result, but an explicit retry can re-query failures.
-    if (existing && (!existing.warning || existing.paper.matchStatus !== 'unresolved' || existing.candidates.length)) return existing;
+    if (!retry && existing && !needsSourceRefresh(seed, existing) && (!existing.warning || existing.paper.matchStatus !== 'unresolved' || existing.candidates.length)) return existing;
     if (!resolving.has(key)) {
       const epoch = cacheEpoch;
       const operation = (async () => {
         const { openAlexKey } = await deps.readCredentials();
-        const resolution = await deps.resolvePaper(seed, openAlexKey);
+        let resolution = await deps.resolvePaper(seed, openAlexKey);
+        // Failed refreshes must not erase a usable source or a paid translation.
+        if (existing?.paper.abstract && !resolution.paper.abstract
+          || existing && existing.paper.matchStatus !== 'unresolved' && resolution.paper.matchStatus === 'unresolved') {
+          resolution = { ...existing!, lookupVersion: resolution.lookupVersion, warning: resolution.warning, sourceAccess: resolution.sourceAccess };
+        }
         await archive(seed, resolution, epoch);
         return resolution;
       })();
@@ -195,7 +210,7 @@ export function createRouter(deps: RouterDependencies) {
     return items.find(item => item.sourceKey === key) ?? (paper ? items.find(item => item.paper.id === paper.id) : undefined);
   }
   async function queueSaved(item: SavedPaper) {
-    const updated = await deps.collection.update(item.id, item.savedAt, { completion: { status: 'queued', updatedAt: Date.now() } });
+    const updated = await deps.collection.update(item.id, item.savedAt, { completion: { status: 'queued', updatedAt: Date.now(), refreshMetadata: true } });
     jobs.kick();
     return updated;
   }
@@ -206,8 +221,10 @@ export function createRouter(deps: RouterDependencies) {
       const url = new URL(sender.url ?? '');
       const trusted = url.href === `chrome-extension://${deps.extensionId}/options.html`;
       const collectionPage = url.href === `chrome-extension://${deps.extensionId}/collection.html`;
+      const sourcePage = url.protocol === 'chrome-extension:' && url.host === deps.extensionId && url.pathname === '/source-access.html' && !url.search;
       const scholar = url.origin === 'https://scholar.google.com' && url.pathname === '/scholar' && Number.isInteger(sender.tab?.id);
-      if (!trusted && !collectionPage && !scholar) throw new Error('此页面不支持文献助手。');
+      if (!trusted && !collectionPage && !scholar && !sourcePage) throw new Error('此页面不支持文献助手。');
+      if (sourcePage && msg.type !== 'GET_SETTINGS') throw new Error('请在扩展设置页执行此操作。');
       const privileged = ['SAVE_SETTINGS', 'TEST_CONNECTION', 'CLEAR_CACHE', 'CLEAR_KEYS'];
       if (privileged.includes(msg.type) && !trusted) throw new Error('请在扩展设置页执行此操作。');
       const collectionOnly = ['GET_COLLECTION', 'REMOVE_SAVED', 'REORDER_SAVED', 'CLEAR_COLLECTION', 'EXPORT_COLLECTION', 'GET_EXPORT', 'RETRY_DOWNLOAD', 'RETRY_SAVED', 'CONFIRM_SAVED'];
@@ -228,6 +245,15 @@ export function createRouter(deps: RouterDependencies) {
         case 'CLEAR_CACHE': cacheEpoch++; previewMemory.clear(); generatedMemory.clear(); await deps.clearCache(); await writing; await deps.setSession('paperRegistry', []); break;
         case 'OPEN_SETTINGS': await deps.openSettings(); break;
         case 'OPEN_COLLECTION': await deps.openCollection(); break;
+        case 'OPEN_SOURCE_ACCESS': {
+          if (!scholar || !deps.openSourceAccess) throw new Error('请在 Scholar 搜索结果页预览论文。');
+          const seed = parseSeed(msg.seed);
+          const record = (await entries()).find(entry => entry.key === registryKey(tab, seed));
+          const access = record?.resolution.sourceAccess;
+          if (!access || normalizeSourceUrl(access.url) !== access.url || new URL(access.url).origin !== access.origin) throw new Error('论文链接无效。');
+          await deps.openSourceAccess(access.url);
+          break;
+        }
         case 'SAVE_PAPER': {
           if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
           data = await withConfiguration(async () => {
@@ -312,15 +338,20 @@ export function createRouter(deps: RouterDependencies) {
           if (resolution) await save({ key: registryKey(tab, seed), tab, resolution, at: Date.now() });
           let generated = resolution ? await cached(resolution.paper) : undefined;
           if (!generated && saved?.generated && resolution && saved.generated.fingerprint === await deps.fingerprint(resolution.paper, await deps.readSettings())) generated = saved.generated;
-          data = { resolution, generated, saved };
+          data = { resolution, generated, saved, needsRefresh: needsSourceRefresh(seed, resolution) && !generated?.abstractTranslated && !generated?.summary };
           break;
         }
         case 'RESOLVE': {
           if (!scholar) throw new Error('请在 Scholar 搜索结果页预览论文。');
           const seed = parseSeed(msg.seed);
           const epoch = cacheEpoch;
-          const resolution = await resolve(seed);
+          const resolution = await resolve(seed, msg.retry === true);
           await save({ key: registryKey(tab, seed), tab, resolution, at: Date.now() }, epoch);
+          const saved = await findSaved(seed, resolution.paper);
+          if (saved && !['queued', 'resolving', 'generating'].includes(saved.completion?.status ?? '') && resolution.paper.abstract && resolution.paper.matchStatus !== 'unresolved') {
+            await deps.collection.update(saved.id, saved.savedAt, { paper: resolution.paper, candidates: [], completion: { status: 'queued', updatedAt: Date.now() } }, saved.paper);
+            jobs.kick();
+          }
           data = resolution;
           break;
         }

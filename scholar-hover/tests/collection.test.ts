@@ -23,6 +23,12 @@ const provisional = (): Paper => ({ ...seed, id: 'seed:one', source: 'Google Sch
 const completion = (status: PaperCompletion['status']): PaperCompletion => ({ status, updatedAt: 1 });
 
 describe('saved paper collection', () => {
+  it('retains a paper read from its original page across storage reads', async () => {
+    const { store } = fixture();
+    const original = paper('source', { source: 'Original page' });
+    await store.save(original);
+    expect((await store.list()).items[0].paper).toEqual(original);
+  });
   it('persists detached provisional source context immediately and deduplicates its later enriched paper', async () => {
     const { store } = fixture();
     const context = { sourceKey: 'result:one', seed: structuredClone(seed), completion: completion('queued') };

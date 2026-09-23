@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseResult, startContentScript } from '../src/content/index.ts';
 import { chooseUniqueMatch } from '../src/shared/matching.ts';
-import type { Generated, PreviewSnapshot, Request, SavedPaper, SettingsView } from '../src/shared/types.ts';
+import type { Generated, Paper, PreviewSnapshot, Request, SavedPaper, SettingsView } from '../src/shared/types.ts';
 
 const paper = (overrides = '') => {
   document.body.innerHTML = `
@@ -35,6 +35,149 @@ afterEach(() => {
 });
 
 describe('cache-first previews and early saving', () => {
+  it('refreshes an old no-abstract HTTP 429 preview once while retaining its cached title', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const stale = { ...matched('Old cached title'), paper: { ...matched('Old cached title').paper, abstract: undefined, matchStatus: 'unresolved' as const }, warning: '元数据查询失败：HTTP 429' };
+    const titleOnly = { ...generated('zh-CN', '已有标题译文'), abstractTranslated: null, summary: null };
+    let finishResolution!: (value: unknown) => void;
+    const sendMessage = vi.fn((message: Request) => message.type === 'RESOLVE' ? new Promise(resolve => { finishResolution = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? { ...settings, model: 'm' }
+        : message.type === 'GET_PREVIEW' ? { resolution: stale, generated: titleOnly, needsRefresh: true } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      expect(cardRoot().textContent).toContain('已有标题译文');
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'RESOLVE')).toHaveLength(1);
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      window.dispatchEvent(new Event('focus')); await vi.advanceTimersByTimeAsync(5000);
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'RESOLVE')).toHaveLength(1);
+      finishResolution({ ok: true, data: { ...matched('Recovered from source'), lookupVersion: 2 } }); await flush();
+      expect(cardRoot().querySelector('h2')?.textContent).toBe('Recovered from source');
+      expect(cardRoot().textContent).toContain('A real abstract.');
+      expect(cardRoot().textContent).not.toContain('HTTP 429');
+    } finally { stop(); }
+  });
+
+  it('keeps a complete cached abstract local even if the old preview is marked stale', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const sendMessage = vi.fn((message: Request) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings
+      : message.type === 'GET_PREVIEW' ? { resolution: matched(), generated: generated('zh-CN', '完整译文'), needsRefresh: true } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      expect(cardRoot().textContent).toContain('完整译文');
+      expect(sendMessage.mock.calls.some(([message]) => ['RESOLVE', 'GENERATE'].includes(message.type))).toBe(false);
+    } finally { stop(); }
+  });
+
+  it('offers metadata retry alongside an existing title translation without another paid model request', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const resolution = { ...matched(), paper: { ...matched().paper, abstract: undefined }, lookupVersion: 2 };
+    let finishResolution!: (value: unknown) => void;
+    const sendMessage = vi.fn((message: Request) => message.type === 'RESOLVE' ? new Promise(resolve => { finishResolution = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? { ...settings, model: 'm', autoGenerate: true, consent: true, hasApiKey: true }
+        : message.type === 'GET_PREVIEW' ? { resolution, generated: { ...generated('zh-CN', '只有标题译文'), abstractTranslated: null, summary: null } } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      const retry = cardRoot().querySelector<HTMLButtonElement>('[data-action="retry-metadata"]');
+      expect(retry?.textContent).toBe('重新读取摘要'); retry?.click(); await flush();
+      cardRoot().querySelector<HTMLButtonElement>('[data-action="retry-metadata"]')?.click(); await flush();
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'RESOLVE')).toEqual([[{ type: 'RESOLVE', seed: parseResult(result), retry: true }]]);
+      finishResolution({ ok: true, data: resolution }); await flush();
+      expect(cardRoot().textContent).toContain('只有标题译文');
+      expect(cardRoot().querySelector<HTMLButtonElement>('[data-action="retry-metadata"]')?.disabled).toBe(false);
+      expect(sendMessage.mock.calls.some(([message]) => message.type === 'GENERATE')).toBe(false);
+    } finally { stop(); }
+  });
+
+  it.each<[string, Partial<Paper>]>([
+    ['title', { title: 'Corrected source title' }],
+    ['authors', { authors: ['Grace Hopper'] }],
+    ['year', { year: 2025 }],
+    ['venue', { venue: 'Corrected Journal' }],
+    ['url', { url: 'https://publisher.example/new-version' }],
+    ['doi', { doi: '10.1000/corrected' }],
+    ['source', { source: 'Original page' }],
+    ['sourceUrl', { sourceUrl: 'https://publisher.example/article/42' }],
+    ['preprint', { preprint: true }],
+  ])('revalidates title-only output when metadata retry changes %s for the same paper ID', async (_field, changed) => {
+    vi.useFakeTimers(); const result = paper();
+    const resolution = { ...matched(), paper: { ...matched().paper, abstract: undefined }, lookupVersion: 2 };
+    const fresh = { ...resolution, paper: { ...resolution.paper, ...changed } };
+    const titleOnly = { ...generated('zh-CN', '过期标题译文'), abstractTranslated: null, summary: null };
+    const cached = { ...titleOnly, titleTranslated: '更新后的缓存译文' };
+    let finishCache!: (value: unknown) => void;
+    const sendMessage = vi.fn((message: Request) => message.type === 'GET_CACHED' ? new Promise(resolve => { finishCache = resolve; })
+      : Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? { ...settings, model: 'm', autoGenerate: true, consent: true, hasApiKey: true }
+        : message.type === 'GET_PREVIEW' ? { resolution, generated: titleOnly } : message.type === 'RESOLVE' ? fresh : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      expect(cardRoot().textContent).toContain('过期标题译文');
+      cardRoot().querySelector<HTMLButtonElement>('[data-action="retry-metadata"]')?.click(); await flush();
+      expect(cardRoot().textContent).not.toContain('过期标题译文');
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'GET_CACHED')).toEqual([[{ type: 'GET_CACHED', paperId: 'paper-1' }]]);
+      finishCache({ ok: true, data: cached }); await flush();
+      expect(cardRoot().textContent).toContain('更新后的缓存译文');
+      expect(sendMessage.mock.calls.some(([message]) => message.type === 'GENERATE')).toBe(false);
+    } finally { stop(); }
+  });
+
+  it('reports failed lookup without requesting candidate confirmation when no candidate exists', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const resolution = { paper: { ...matched().paper, abstract: undefined, matchStatus: 'unresolved' }, candidates: [], warning: '元数据查询失败：HTTP 429', lookupVersion: 2 };
+    const sendMessage = vi.fn((message: Request) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings
+      : message.type === 'GET_PREVIEW' ? { resolution } : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      expect(cardRoot().querySelector('.footer > .status')?.textContent).toContain('查询失败');
+      expect(cardRoot().textContent).not.toContain('请确认条目');
+      expect(cardRoot().querySelector('[data-action="confirm"]')).toBeNull();
+      expect(cardRoot().querySelector('[data-action="generate"]')?.textContent).toBe('生成中文信息');
+    } finally { stop(); }
+  });
+
+  it('opens scoped source access and retries metadata only once on return focus', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const resolution = { ...matched(), paper: { ...matched().paper, abstract: undefined }, lookupVersion: 2,
+      sourceAccess: { url: 'https://publisher.example/article', origin: 'https://publisher.example' } };
+    const sendMessage = vi.fn((message: Request) => Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? settings
+      : message.type === 'GET_PREVIEW' ? { resolution } : message.type === 'RESOLVE' ? matched() : undefined }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      const access = cardRoot().querySelector<HTMLButtonElement>('[data-action="source-access"]');
+      expect(access?.textContent).toBe('允许读取原文网站'); access?.click(); await flush();
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'OPEN_SOURCE_ACCESS')).toEqual([[{ type: 'OPEN_SOURCE_ACCESS', seed: parseResult(result) }]]);
+      window.dispatchEvent(new Event('focus')); await flush(); window.dispatchEvent(new Event('focus')); await flush();
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === 'RESOLVE')).toEqual([[{ type: 'RESOLVE', seed: parseResult(result), retry: true }]]);
+      expect(cardRoot().textContent).toContain('A real abstract.');
+    } finally { stop(); }
+  });
+
+  it('refreshes saved completion after a deliberate metadata retry and leaves generation to the background', async () => {
+    vi.useFakeTimers(); const result = paper();
+    const resolution = { ...matched(), paper: { ...matched().paper, abstract: undefined }, lookupVersion: 2 };
+    const saved: SavedPaper = { id: 'saved-1', paper: resolution.paper, savedAt: 1, updatedAt: 1, completion: { status: 'failed', updatedAt: 1 } };
+    let snapshot: PreviewSnapshot = { resolution, saved };
+    const sendMessage = vi.fn((message: Request) => {
+      if (message.type === 'RESOLVE') snapshot = { resolution: matched(), saved: { ...saved, paper: matched().paper, completion: { status: 'generating', updatedAt: 2 } } };
+      return Promise.resolve({ ok: true, data: message.type === 'GET_SETTINGS' ? { ...settings, autoGenerate: true, consent: true, hasApiKey: true }
+        : message.type === 'GET_PREVIEW' ? snapshot : message.type === 'RESOLVE' ? matched() : undefined });
+    });
+    vi.stubGlobal('chrome', { runtime: { sendMessage } }); const stop = startContentScript();
+    try {
+      titleTarget(result).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); await vi.advanceTimersByTimeAsync(500);
+      expect(cardRoot().querySelector('.save-status')?.textContent).toContain('补全失败');
+      cardRoot().querySelector<HTMLButtonElement>('[data-action="retry-metadata"]')?.click(); await flush();
+      expect(cardRoot().querySelector('.save-status')?.textContent).toContain('正在后台生成');
+      expect(sendMessage.mock.calls.some(([message]) => message.type === 'GENERATE')).toBe(false);
+      expect(cardRoot().querySelector('[data-action="save"]')?.textContent).toContain('已缓存');
+    } finally { stop(); }
+  });
+
   it('loads saved and viewed badges in one local batch before hovering and hides unknown states', async () => {
     const first = paper();
     for (let index = 1; index <= 3; index++) {

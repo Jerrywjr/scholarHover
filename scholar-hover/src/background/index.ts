@@ -41,6 +41,7 @@ const route = createRouter({
   hasPermission: async origin => chrome.permissions.contains({ origins: [origin] }),
   openSettings: async () => { await chrome.runtime.openOptionsPage(); },
   openCollection: async () => { await chrome.tabs.create({ url: chrome.runtime.getURL('collection.html') }); },
+  openSourceAccess: async url => { await chrome.tabs.create({ url: chrome.runtime.getURL('source-access.html') + '#' + encodeURIComponent(url) }); },
   collection, exports,
 });
 // A collection recovery error must not prevent Settings or deletion controls

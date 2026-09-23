@@ -1,5 +1,7 @@
 import { isBackgroundSender, type ModelCommand } from '../background/long-model';
 import type { Generated } from '../shared/types';
+import type { ParseSourceCommand } from '../background/source';
+import { extractSourcePaper } from '../shared/source-page';
 
 interface ModelWorkerReply {
   requestId: string;
@@ -9,9 +11,17 @@ interface ModelWorkerReply {
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
-  const command = message as ModelCommand | null;
-  if (command?.target !== 'scholar-hover-offscreen' || command.type !== 'GENERATE_MODEL') return false;
+  const command = message as ModelCommand | ParseSourceCommand | null;
+  if (command?.target !== 'scholar-hover-offscreen' || !['GENERATE_MODEL', 'PARSE_SOURCE'].includes(command.type)) return false;
   if (!isBackgroundSender(sender, chrome.runtime.id, chrome.runtime.getURL('background.js')) || typeof command.requestId !== 'string' || !command.requestId) return false;
+  if (command.type === 'PARSE_SOURCE') {
+    try {
+      if (typeof command.html !== 'string' || command.html.length > 2 * 1024 * 1024) throw new Error('Invalid HTML');
+      const data = extractSourcePaper(command.html, command.url, command.seed);
+      sendResponse({ target: 'scholar-hover-background', requestId: command.requestId, ok: true, data });
+    } catch { sendResponse({ target: 'scholar-hover-background', requestId: command.requestId, ok: false }); }
+    return false;
+  }
 
   const worker = new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' });
   let settled = false;

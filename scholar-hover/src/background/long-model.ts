@@ -1,4 +1,5 @@
 import type { Generated, Paper, Settings } from '../shared/types';
+import { ensureOffscreenDocument } from './offscreen-document';
 
 export interface ModelCommand {
   target: 'scholar-hover-offscreen';
@@ -65,11 +66,7 @@ export const generatePaperOffscreen = createLongModelGenerator({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [chrome.runtime.getURL('offscreen.html')],
   })).length > 0,
-  createDocument: () => chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: [chrome.offscreen.Reason.WORKERS],
-    justification: 'Run a long model request in a dedicated worker while Chrome suspends the extension service worker.',
-  }),
+  createDocument: ensureOffscreenDocument,
   sendMessage: message => chrome.runtime.sendMessage(message),
   randomId: () => crypto.randomUUID(),
 });

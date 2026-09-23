@@ -13,12 +13,14 @@ export interface Paper extends PaperSeed {
   downloadUrl?: string;
   downloadVersion?: string;
   abstract?: string;
-  source: 'OpenAlex' | 'Crossref' | 'Google Scholar';
+  source: 'OpenAlex' | 'Crossref' | 'Google Scholar' | 'Original page';
   sourceUrl: string;
   sources?: { name: string; url: string }[];
   matchStatus: 'matched' | 'confirmed' | 'unresolved';
 }
 export interface Resolution {
+  lookupVersion?: number;
+  sourceAccess?: { url: string; origin: string };
   cacheWarning?: string;
   paper: Paper;
   candidates: Paper[];
@@ -51,7 +53,7 @@ export interface SettingsView extends Settings {
 }
 export interface Credentials { apiKey: string; openAlexKey: string }
 export type CompletionStatus = 'queued' | 'resolving' | 'generating' | 'ready' | 'needs-confirmation' | 'needs-configuration' | 'failed' | 'interrupted';
-export interface PaperCompletion { status: CompletionStatus; updatedAt: number; error?: string }
+export interface PaperCompletion { status: CompletionStatus; updatedAt: number; error?: string; refreshMetadata?: boolean }
 export interface SavedPaper {
   id: string;
   paper: Paper;
@@ -65,7 +67,7 @@ export interface SavedPaper {
 }
 export interface CollectionSnapshot { revision: number; items: SavedPaper[] }
 export type PreviewState = 'unviewed' | 'viewed' | 'saved' | 'unknown';
-export interface PreviewSnapshot { resolution?: Resolution; generated?: Generated; saved?: SavedPaper }
+export interface PreviewSnapshot { resolution?: Resolution; generated?: Generated; saved?: SavedPaper; needsRefresh?: boolean }
 export type DownloadState = 'queued' | 'downloading' | 'complete' | 'failed';
 export interface ExportItem {
   id: string;
@@ -88,7 +90,8 @@ export interface ExportBatch {
   markdown: { filename: string; state: DownloadState; downloadId?: number; error?: string };
 }
 export type Request =
-  | { type: 'RESOLVE'; seed: PaperSeed }
+  | { type: 'RESOLVE'; seed: PaperSeed; retry?: boolean }
+  | { type: 'OPEN_SOURCE_ACCESS'; seed: PaperSeed }
   | { type: 'CONFIRM'; candidateId: string; seed: PaperSeed }
   | { type: 'GENERATE'; paperId: string; force?: boolean }
   | { type: 'GET_CACHED'; paperId: string }

@@ -6,7 +6,11 @@ A Chrome extension that puts source-linked paper previews beside your Google Sch
 
 **English** · [简体中文](README.zh-CN.md)
 
-[Download v0.4.0](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) · [Setup guide](scholar-hover/README.md) · [Report a problem](https://github.com/Jerrywjr/scholar-hover/issues) · [MIT license](LICENSE)
+[Download published v0.4.0](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) · [Setup guide](scholar-hover/README.md) · [Report a problem](https://github.com/Jerrywjr/scholar-hover/issues) · [MIT license](LICENSE)
+
+**The local working version is 0.4.1, with abstract retrieval from the linked paper page.** It has not been published to GitHub Releases or the Chrome Web Store. The download above remains the published 0.4.0; use a local 0.4.1 package or build this checkout to try the fix.
+
+Local 0.4.1 verification: **407 unit/DOM tests and 116 browser checks passed**, plus extraction from the reported live arXiv page. See the [source-retrieval test report](scholar-hover/docs/test-report-0.4.1.md) for evidence and limitations.
 
 ## The problem: screening papers interrupts the search
 
@@ -54,24 +58,28 @@ Requires **desktop Chrome 120 or later**. This release is loaded as an unpacked 
 
 When upgrading, replace the files in the **same extension folder**, reload the extension and refresh Scholar. Avoid uninstalling or loading a different directory if you want to retain the original extension's local data. See the [detailed English guide](scholar-hover/README.md) or [中文配置说明](scholar-hover/README.zh-CN.md).
 
+For local 0.4.1, Chrome may request the newly declared `arxiv.org` access. Other publishers require a separate, single-site grant through **Allow access to the original website** in the card. No access to all websites is granted at installation.
+
 ## Languages, data and control
 
 - **Four languages:** English, Simplified Chinese, French and German. Interface and generated-content languages are independent. Both default to Simplified Chinese; choose your preference in settings.
-- **Traceable metadata:** OpenAlex is the primary source; Crossref can supplement missing fields for a verified DOI. Source links are added by the extension, not invented by the model. Ambiguous matches require confirmation, and preprint/publication conflicts are not silently merged.
+- **Traceable metadata:** After checking the local archive, 0.4.1 first reads the paper link in the Scholar result. arXiv abstract, PDF and HTML links are normalized to the abstract page, preserving an explicit version. Other public pages can provide citation metadata or an explicit `ScholarlyArticle` abstract. OpenAlex and Crossref are fallbacks when a generic source is unavailable or lacks an abstract; an arXiv manuscript is never replaced by an indexed version. Source links are recorded by the extension, and ambiguous matches require confirmation.
 - **Abstract-based output:** The one-sentence summary is based on the retrieved abstract. Without an abstract, only title translation is allowed. The extension does not infer a paper's methods or results from its title.
 - **Local retention:** Previews and translations have no automatic age or count eviction. Browser storage limits still apply. The separate saved reading list holds up to 200 papers / 4 MiB; clearing the preview archive leaves that list intact.
 - **Explicit model use:** Automatic hover generation can be disabled. Saving a paper explicitly requests background completion even in manual-hover mode; model calls still require your consent, configuration and permission. Failed completion does not automatically repeat model calls. An interrupted request after restart may need a manual retry and may already have been charged.
 - **Keys and privacy:** Keys stay in the browser session by default, with optional local persistence. The model receives the title, available abstract and translation instructions. There is no project telemetry or cross-device sync. Read the privacy notice in [English](scholar-hover/docs/privacy.en.md), [中文](scholar-hover/docs/privacy.md), [Français](scholar-hover/docs/privacy.fr.md) or [Deutsch](scholar-hover/docs/privacy.de.md).
 
+A missing abstract or old metadata HTTP 429 needs **Read abstract again**, which retries retrieval; **Retry generation** retries the model using the text already retrieved. Eligible old previews without an abstract are refreshed through the new path when reopened. Complete cached abstracts and compatible paid translations remain reusable. Source-page requests omit cookies and credentials; HTML is parsed locally without running page scripts or following redirects. This does not extract text from arbitrary PDFs or sign into publisher sites.
+
 ## What to expect from this release
 
-**v0.4.0 is an experimental open-source release.** It currently supports paper results on `scholar.google.com`. Metadata and abstract coverage vary; model translations can be wrong. Check important numbers, negation and conclusions against the original text.
+**The published v0.4.0 and local v0.4.1 are experimental.** They support paper results on `scholar.google.com`. Metadata and abstract coverage vary; model translations can be wrong. Check important numbers, negation and conclusions against the original text.
 
 PDF downloads depend on accessible source links. Login pages, missing PDFs and interrupted downloads are reported; you complete institutional authentication or CAPTCHA yourself. The extension does not bypass access controls. APA-style references use available metadata and omit missing fields; review them before formal citation.
 
 There is no journal impact factor, PDF analysis, reference-library synchronization or automatic Scholar crawling. The project focuses on the decision before full-text reading.
 
-The v0.4.0 checks include **287 unit/DOM tests and 87 browser checks** with local fixtures, covering persistent previews, immediate saving, restart recovery, request deduplication and ordered exports. These checks verify software behavior; they do not establish faster screening, real-world matching accuracy or translation quality. See the [verification report](scholar-hover/docs/test-report-0.4.0.md) and [human evaluation plan](scholar-hover/evaluation/README.md).
+The v0.4.0 checks include **287 unit/DOM tests and 87 browser checks** with local fixtures, covering persistent previews, immediate saving, restart recovery, request deduplication and ordered exports. Those counts describe v0.4.0, not verification of the local 0.4.1 changes. They do not establish faster screening, real-world matching accuracy or translation quality. See the [verification report](scholar-hover/docs/test-report-0.4.0.md) and [human evaluation plan](scholar-hover/evaluation/README.md).
 
 ## Develop and contribute
 

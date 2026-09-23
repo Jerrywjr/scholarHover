@@ -1,5 +1,7 @@
 import type { Paper, PaperSeed, Resolution } from '../shared/types';
 import { canUseDoiMatch, chooseUniqueMatch, normalizeDoi, type MatchableWork } from '../shared/matching';
+import { readSourcePaper, type SourceReader } from './source';
+import { normalizeSourceUrl } from '../shared/source-page';
 
 const OPENALEX_WORKS = 'https://api.openalex.org/works';
 const CROSSREF_WORKS = 'https://api.crossref.org/works';
@@ -202,13 +204,43 @@ function attachCrossrefAbstractSource(paper: Paper, doi: string): void {
   paper.sources = [...(paper.sources ?? []), { name: 'Crossref · 摘要', url }];
 }
 
-function warningFor(error: unknown): string {
+function warningFor(error: unknown, provider = 'OpenAlex'): string {
   const detail = error instanceof Error ? error.message : '未知网络错误';
-  return `元数据查询失败：${detail}`;
+  return `${provider} 查询失败：${detail}`;
 }
 
-/** Resolve only a high-confidence OpenAlex record; every other result remains reviewable. */
-export async function resolvePaper(seed: PaperSeed, openAlexKey?: string): Promise<Resolution> {
+/** Query indexes only after trying the user's actual paper link. */
+export async function resolvePaper(seed: PaperSeed, openAlexKey?: string, reader?: SourceReader): Promise<Resolution> {
+  const timings: Record<string, number> = {};
+  const source = await readSourcePaper(seed, timings, reader);
+  const direct = source.paper;
+  if (direct?.abstract) return { paper: direct, candidates: [], timings, lookupVersion: 2 };
+  // An arXiv URL identifies a manuscript (and sometimes an exact revision).
+  // Indexes cannot verify that revision, so never replace it with another work.
+  const sourceUrl = normalizeSourceUrl(seed.url);
+  if (sourceUrl && new URL(sourceUrl).hostname === 'arxiv.org') {
+    return { ...source, paper: direct ?? unresolvedPaper(seed), candidates: [], timings, lookupVersion: 2 };
+  }
+  const indexed = await resolveIndexedPaper(direct ?? seed, openAlexKey);
+  const result: Resolution = { ...indexed, timings: { ...timings, ...indexed.timings }, lookupVersion: 2 };
+  if (direct) {
+    // Copy an indexed abstract only with the same DOI and publication kind;
+    // retain the actual linked page's identity, metadata and PDF version.
+    const sameDoi = normalizeDoi(direct.doi) && normalizeDoi(direct.doi) === normalizeDoi(indexed.paper.doi);
+    const sameKind = direct.preprint === indexed.paper.preprint;
+    const abstract = sameDoi && sameKind && indexed.paper.matchStatus !== 'unresolved' ? indexed.paper.abstract : undefined;
+    result.paper = { ...direct, ...(abstract ? { abstract, sources: [...(direct.sources ?? []), ...(indexed.paper.sources ?? []), { name: indexed.paper.source, url: indexed.paper.sourceUrl }] } : {}) };
+    result.candidates = [];
+  }
+  if (!result.paper.abstract) {
+    result.warning = [source.warning, indexed.warning].filter(Boolean).join('；') || undefined;
+    if (source.sourceAccess) result.sourceAccess = source.sourceAccess;
+  }
+  return result;
+}
+
+/** Resolve only a high-confidence index record; other candidates stay reviewable. */
+async function resolveIndexedPaper(seed: PaperSeed, openAlexKey?: string): Promise<Resolution> {
   const timings: Record<string, number> = {};
   const doi = normalizeDoi(seed.doi);
   const apiUrl = doi
@@ -236,7 +268,7 @@ export async function resolvePaper(seed: PaperSeed, openAlexKey?: string): Promi
           attachCrossrefAbstractSource(paper, doi);
         }
       } catch (error) {
-        return { paper, candidates: [], warning: `OpenAlex 已匹配，但${warningFor(error)}`, timings };
+        return { paper, candidates: [], warning: `OpenAlex 已匹配，但${warningFor(error, 'Crossref')}`, timings };
       }
     }
     return { paper, candidates: [], timings };
@@ -258,7 +290,7 @@ export async function resolvePaper(seed: PaperSeed, openAlexKey?: string): Promi
             attachCrossrefAbstractSource(paper, matchedDoi);
           }
         } catch (error) {
-          return { paper, candidates: [], warning: `OpenAlex 已匹配，但${warningFor(error)}`, timings };
+          return { paper, candidates: [], warning: `OpenAlex 已匹配，但${warningFor(error, 'Crossref')}`, timings };
         }
       }
       return { paper, candidates: [], timings };

@@ -1,6 +1,6 @@
 {
   "name": "scholar-hover",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "test:watch": "vitest",
     "test:corpus": "node evaluation/evaluate-corpus.test.mjs",
     "test:e2e": "node scripts/e2e.mjs",
+    "test:source-e2e": "node scripts/source-e2e.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
   "devDependencies": {

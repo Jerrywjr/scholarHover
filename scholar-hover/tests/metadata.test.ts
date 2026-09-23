@@ -124,7 +124,7 @@ describe('resolvePaper', () => {
 
     expect(result.paper).toMatchObject({ title: seed.title, source: 'Google Scholar', matchStatus: 'unresolved' });
     expect(result.paper.abstract).toBeUndefined();
-    expect(result.warning).toMatch(/元数据.*429/);
+    expect(result.warning).toMatch(/OpenAlex.*429/);
     expect(result.timings?.openalex).toBeTypeOf('number');
   });
 
