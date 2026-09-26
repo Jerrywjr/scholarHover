@@ -1,6 +1,6 @@
 {
   "name": "scholar-hover",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "test:corpus": "node evaluation/evaluate-corpus.test.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "test:source-e2e": "node scripts/source-e2e.mjs",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "npm run build && node scripts/package.mjs",
+    "test:universal-e2e": "node scripts/universal-e2e.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.0",

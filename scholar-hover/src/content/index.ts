@@ -3,11 +3,16 @@ import { rpc } from '../shared/rpc.ts';
 import { localizeError } from '../shared/errors.ts';
 import { LANGUAGES, type Language } from '../shared/languages.ts';
 import { contentText, type ContentMessageKey } from './messages.ts';
+import { linkFor, parseLink } from './links.ts';
 import type { CompletionStatus, Generated, Paper, PaperSeed, PreviewSnapshot, PreviewState, Resolution, SavedPaper, SettingsView } from '../shared/types.ts';
 
 const RESULT_SELECTOR = '.gs_r.gs_or.gs_scl';
 const TITLE_SELECTOR = '.gs_rt';
 const CARD_ID = 'scholar-hover-card';
+const INSTANCE_KEY = '__scholarHoverContentCleanup';
+type ContentWindow = Window & { [INSTANCE_KEY]?: () => void };
+const targetFor = (node: EventTarget | null) => resultFor(node) ?? linkFor(node);
+const seedFor = (element: Element) => isResult(element) ? parseResult(element) : element instanceof HTMLAnchorElement ? parseLink(element) : null;
 
 type Active = {
   element: Element;
@@ -145,7 +150,7 @@ function cardButton(label: string, action: string, pressed?: boolean): HTMLButto
 function appendSource(body: HTMLElement, paper: Paper, label: (key: ContentMessageKey) => string, generated?: Generated): void {
   const sources = document.createElement('p');
   sources.className = 'sources';
-  const names = [`${label('source')}: ${paper.source === 'Original page' ? label('originalSource') : paper.source}`];
+  const names = [`${label('source')}: ${paper.source === 'Original page' ? label('originalSource') : paper.source === 'Link' ? label('linkSource') : paper.source}`];
   if (generated) names.push(`${label('model')}: ${generated.model}`);
   sources.textContent = names.join(' · ');
   if (isSafeUrl(paper.sourceUrl)) {
@@ -172,6 +177,8 @@ function appendSource(body: HTMLElement, paper: Paper, label: (key: ContentMessa
 
 export function startContentScript(): () => void {
   if (typeof document === 'undefined' || !document.body) return () => undefined;
+  const contentWindow = window as ContentWindow;
+  if (contentWindow[INSTANCE_KEY]) return () => undefined;
   const host = createHost();
   const root = host.shadowRoot!;
   addStyle(root);
@@ -196,9 +203,11 @@ export function startContentScript(): () => void {
   let configRevision = 0;
   let settingsRead = 0;
   let stopped = false;
+  let enabled = true;
+  let activationRevision = 0;
   let settingsReady: Promise<void>;
   const label = (key: ContentMessageKey) => contentText(key, preferences.uiLanguage, preferences.outputLanguage);
-  const seedKey = (seed: PaperSeed) => JSON.stringify([seed.url, seed.title, seed.authors, seed.year, seed.doi, seed.preprint]);
+  const seedKey = (seed: PaperSeed) => seed.linkOnly ? JSON.stringify(['link', seed.url]) : JSON.stringify([seed.url, seed.title, seed.authors, seed.year, seed.doi, seed.preprint]);
   const configuration = () => JSON.stringify([preferences.outputLanguage, preferences.baseUrl, preferences.model]);
   const generationAttempt = (paper: Paper) => JSON.stringify([paper.id, preferences.outputLanguage, preferences.baseUrl, preferences.model]);
   // Match the cache's paper identity, and distinguish preprint metadata before
@@ -211,7 +220,7 @@ export function startContentScript(): () => void {
   const validGenerated = (generated: Generated | undefined) => generated?.language === preferences.outputLanguage
     && (!preferences.model || generated.model === preferences.model) ? generated : undefined;
   const completionPending = (saved?: SavedPaper) => saved?.completion && ['queued', 'resolving', 'generating'].includes(saved.completion.status);
-  const resolutionNotice = (resolution: Resolution): ContentMessageKey => resolution.paper.matchStatus !== 'unresolved' ? 'matched'
+  const resolutionNotice = (resolution: Resolution): ContentMessageKey => resolution.paper.source === 'Link' ? 'linkOnly' : resolution.paper.matchStatus !== 'unresolved' ? 'matched'
     : resolution.candidates.length ? 'uncertain' : resolution.warning ? 'queryFailed' : 'noMatch';
   const completionLabels: Record<CompletionStatus, ContentMessageKey> = {
     queued: 'completionQueued', resolving: 'completionResolving', generating: 'completionGenerating', ready: 'completionReady',
@@ -227,7 +236,7 @@ export function startContentScript(): () => void {
     return entry ? { ...entry.snapshot, generated: entry.configuration === configuration() ? validGenerated(entry.snapshot.generated) : undefined } : undefined;
   };
   const updateBadges = () => {
-    if (stopped || !host.isConnected) return;
+    if (stopped || !enabled || !host.isConnected) return;
     for (const result of document.querySelectorAll<HTMLElement>(RESULT_SELECTOR)) {
       const seed = parseResult(result); if (!seed) continue;
       const key = seedKey(seed), known = memo.get(key)?.snapshot;
@@ -245,7 +254,7 @@ export function startContentScript(): () => void {
     }
   };
   const requestBadgeStates = (refresh = false) => {
-    if (stopped || !host.isConnected) return;
+    if (stopped || !enabled || !host.isConnected) return;
     const unique = new Map<string, PaperSeed>();
     for (const result of document.querySelectorAll(RESULT_SELECTOR)) {
       const seed = parseResult(result);
@@ -257,7 +266,7 @@ export function startContentScript(): () => void {
       const epochs = batch.map(([key]) => seedEpoch.get(key) ?? 0);
       for (const [key] of batch) badgeReads.set(key, read);
       void rpc<PreviewState[]>({ type: 'GET_PREVIEW_STATES', seeds: batch.map(([, seed]) => seed) }).then(states => {
-        if (stopped || !host.isConnected || !Array.isArray(states)) return;
+        if (stopped || !enabled || !host.isConnected || !Array.isArray(states)) return;
         batch.forEach(([key], index) => {
           if (badgeReads.get(key) !== read || (seedEpoch.get(key) ?? 0) !== epochs[index]) return;
           const state = states[index];
@@ -275,7 +284,7 @@ export function startContentScript(): () => void {
   };
   const stopPreviewPoll = () => { if (previewTimer) window.clearTimeout(previewTimer); previewTimer = undefined; };
 
-  const current = (expected: number) => active?.token === expected && host.isConnected;
+  const current = (expected: number) => !stopped && enabled && active?.token === expected && host.isConnected;
   const minimumHeight = () => Math.min(window.innerHeight, Math.max(360,
     (root.querySelector('.head')?.getBoundingClientRect().height ?? 0)
     + (root.querySelector('.footer')?.getBoundingClientRect().height ?? 0) + 96));
@@ -324,7 +333,28 @@ export function startContentScript(): () => void {
     root.replaceChildren();
     if (restoreFocus && prior?.keyboard) {
       suppressFocusTarget = prior.element;
-      (prior.element.querySelector('a') ?? prior.element.querySelector(TITLE_SELECTOR) as HTMLElement | null)?.focus?.();
+      (prior.element instanceof HTMLAnchorElement ? prior.element : prior.element.querySelector('a') ?? prior.element.querySelector(TITLE_SELECTOR) as HTMLElement | null)?.focus?.();
+    }
+  };
+
+  const clearBadges = () => {
+    document.querySelectorAll('[data-scholar-hover-badge]').forEach(badge => badge.remove());
+    document.querySelectorAll<HTMLElement>('[data-scholar-hover-state]').forEach(result => { delete result.dataset.scholarHoverState; });
+  };
+  const setEnabled = (value: boolean) => {
+    enabled = value;
+    if (!value) { activationRevision += 1; close(); clearBadges(); host.remove(); }
+    else if (!stopped) { if (!host.isConnected) document.body.append(host); updateBadges(); requestBadgeStates(); }
+  };
+  const onRuntimeMessage = (message: unknown, sender: chrome.runtime.MessageSender) => {
+    if (sender.id !== chrome.runtime.id || !message || typeof message !== 'object') return;
+    const change = message as { type?: string; enabled?: unknown };
+    if (change.type !== 'HOVER_STATE_CHANGED' || typeof change.enabled !== 'boolean') return;
+    settingsRead += 1; // An older GET_SETTINGS reply must not undo the broadcast.
+    setEnabled(change.enabled);
+    if (change.enabled) {
+      settingsReady = refreshSettings();
+      void settingsReady.then(() => resumeAutomaticGeneration());
     }
   };
 
@@ -466,7 +496,7 @@ export function startContentScript(): () => void {
   // Keeping the dock visible must not authorize a new model call after the
   // reader has left the result. Cached data can still finish loading normally.
   const interestedInActive = () => !!active && (active.pinned || active.titleHovered || active.cardHovered
-    || !!root.activeElement || resultFor(document.activeElement) === active.element);
+    || !!root.activeElement || targetFor(document.activeElement) === active.element);
   const showGeneration = async (expected: number, paper: Paper, force = false) => {
     const revision = configRevision;
     const attempt = generationAttempt(paper);
@@ -525,6 +555,7 @@ export function startContentScript(): () => void {
       const uiChanged = next.uiLanguage !== preferences.uiLanguage;
       const outputChanged = next.outputLanguage !== preferences.outputLanguage || next.baseUrl !== preferences.baseUrl || next.model !== preferences.model;
       preferences = next;
+      setEnabled(next.hoverEnabled !== false);
       updateBadges();
       if (outputChanged) configRevision += 1;
       if (!active) return;
@@ -559,13 +590,15 @@ export function startContentScript(): () => void {
     return before !== JSON.stringify([active.resolution, active.generated, active.saved]);
   };
   const fetchPreview = async (seed: PaperSeed): Promise<PreviewRead> => {
+    const activation = activationRevision;
     await settingsReady;
+    if (stopped || !enabled || activation !== activationRevision) return { snapshot: {}, configuration: configuration(), epoch: seedEpoch.get(seedKey(seed)) ?? 0 };
     const config = configuration(), source = seedKey(seed), epoch = seedEpoch.get(source) ?? 0;
-    const key = JSON.stringify([source, config, epoch]);
+    const key = JSON.stringify([source, config, epoch, activation]);
     const pending = previews.get(key); if (pending) return pending;
     const request = rpc<PreviewSnapshot | undefined>({ type: 'GET_PREVIEW', seed }).then(value => {
       const snapshot: PreviewSnapshot = value && (value.resolution || value.saved || value.generated) ? value : {};
-      if (!stopped && (seedEpoch.get(source) ?? 0) === epoch) {
+      if (!stopped && enabled && activation === activationRevision && (seedEpoch.get(source) ?? 0) === epoch) {
         saveMemo(seed, snapshot, config); updateBadges();
       }
       return { snapshot, configuration: config, epoch };
@@ -635,8 +668,8 @@ export function startContentScript(): () => void {
   };
 
   const open = (element: Element, keyboard = false, preview?: Promise<PreviewRead>) => {
-    if (active?.pinned && active.element !== element) return;
-    const seed = parseResult(element); if (!seed) return;
+    if (!enabled || stopped || !element.isConnected || active?.pinned && active.element !== element) return;
+    const seed = seedFor(element); if (!seed) return;
     if (active?.element === element) { resumeAutomaticGeneration(); return; }
     if (hoverTimer) window.clearTimeout(hoverTimer);
     stopPreviewPoll();
@@ -648,14 +681,14 @@ export function startContentScript(): () => void {
     void refreshPreview(expected, seed, preview ?? fetchPreview(seed), true);
   };
   const scheduleOpen = (element: Element, keyboard = false) => {
-    if (active?.pinned && active.element !== element) return;
+    if (!enabled || stopped || active?.pinned && active.element !== element) return;
     if (hoverTimer) window.clearTimeout(hoverTimer);
-    const seed = parseResult(element);
+    const seed = seedFor(element);
     const preview = seed ? fetchPreview(seed) : undefined;
     hoverTimer = window.setTimeout(() => open(element, keyboard, preview), HOVER_DELAY);
   };
   const onOver = (event: MouseEvent) => {
-    const element = resultFor(event.target);
+    const element = targetFor(event.target);
     if (!element) return;
     if (active?.element === element) { active.titleHovered = true; resumeAutomaticGeneration(); }
     else scheduleOpen(element);
@@ -663,8 +696,8 @@ export function startContentScript(): () => void {
   // A right-docked panel must remain reachable across the space between the
   // result title and the page edge. Leaving a title defers new automatic calls.
   const onOut = (event: MouseEvent) => {
-    const element = resultFor(event.target);
-    if (!element || resultFor(event.relatedTarget) === element) return;
+    const element = targetFor(event.target);
+    if (!element || targetFor(event.relatedTarget) === element) return;
     if (hoverTimer) window.clearTimeout(hoverTimer);
     hoverTimer = undefined;
     if (active?.element === element) active.titleHovered = false;
@@ -674,11 +707,11 @@ export function startContentScript(): () => void {
     if (active && !(event.relatedTarget instanceof Node && (host.contains(event.relatedTarget) || root.contains(event.relatedTarget)))) active.cardHovered = false;
   };
   const onHostFocus = () => { resumeAutomaticGeneration(); };
-  const onFocus = (event: FocusEvent) => { const element = resultFor(event.target); if (element) { if (element === suppressFocusTarget) { suppressFocusTarget = undefined; return; } scheduleOpen(element, true); } };
+  const onFocus = (event: FocusEvent) => { const element = targetFor(event.target); if (element) { if (element === suppressFocusTarget) { suppressFocusTarget = undefined; return; } scheduleOpen(element, true); } };
   const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && active) { event.preventDefault(); close(true); } };
   const onPointerDown = (event: PointerEvent) => { if (active && !active.pinned && !event.composedPath().includes(host) && !active.element.contains(event.target as Node)) close(); };
   const onCardClick = (event: Event) => {
-    const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]'); if (!button || !active) return;
+    const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]'); if (!button || !active || !enabled || stopped) return;
     const expected = active.token;
     if (button.dataset.action === 'close') { close(true); return; }
     if (button.dataset.action === 'pin') { active.pinned = !active.pinned; render(active.pinned ? 'pinned' : 'unpinned'); resumeAutomaticGeneration(); return; }
@@ -698,7 +731,7 @@ export function startContentScript(): () => void {
         const prior = memoSnapshot(seed) ?? {};
         const resolution = prior.resolution ?? { paper: saved.paper, candidates: saved.candidates ?? [] };
         saveMemo(seed, { ...prior, resolution, saved }); updateBadges();
-        if (!active || seedKey(active.seed) !== key || stopped) return;
+        if (!active || seedKey(active.seed) !== key || stopped || !enabled) return;
         active.previewRead = ++previewRead; active.previewPending = false;
         active.savePending = undefined; active.savedPaperId = saved.id; active.saved = saved;
         if (!active.paper) { active.paper = resolution.paper; active.resolution = resolution; }
@@ -706,7 +739,7 @@ export function startContentScript(): () => void {
         schedulePreviewPoll();
       }).catch(error => {
         saving.delete(key);
-        if (!active || seedKey(active.seed) !== key || stopped) return;
+        if (!active || seedKey(active.seed) !== key || stopped || !enabled) return;
         active.savePending = undefined;
         active.saveNotice = { key: 'saveFailed', failure: true, detail: error instanceof Error ? error.message : undefined }; render();
       }); return;
@@ -789,13 +822,15 @@ export function startContentScript(): () => void {
   };
   const onResize = () => { if (active) positionPanel(); };
   const onWindowFocus = () => {
-    requestBadgeStates(true); settingsReady = refreshSettings();
+    settingsReady = refreshSettings();
+    void settingsReady.then(() => requestBadgeStates(true));
     void settingsReady.then(() => {
       if (active?.sourceAccessReturn) { active.sourceAccessReturn = false; void enrich(active.token, active.seed, true); }
       else if (active?.saved) void refreshPreview(active.token, active.seed);
     });
   };
   settingsReady = refreshSettings();
+  chrome.runtime.onMessage?.addListener(onRuntimeMessage);
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('resize', onResize);
   root.addEventListener('pointerdown', onResizeStart as EventListener);
@@ -808,9 +843,10 @@ export function startContentScript(): () => void {
   root.addEventListener('click', onCardClick);
   const observer = new MutationObserver(() => { if (active && !active.element.isConnected && !active.pinned) close(); updateBadges(); requestBadgeStates(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  updateBadges();
-  requestBadgeStates();
-  return () => { stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onResizeMove, true); document.removeEventListener('pointerup', onResizeEnd, true); document.removeEventListener('pointercancel', onResizeEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); document.querySelectorAll('[data-scholar-hover-badge]').forEach(badge => badge.remove()); document.querySelectorAll<HTMLElement>('[data-scholar-hover-state]').forEach(result => { delete result.dataset.scholarHoverState; }); host.remove(); };
+  void settingsReady.then(() => { updateBadges(); requestBadgeStates(); });
+  const cleanup = () => { delete contentWindow[INSTANCE_KEY]; chrome.runtime.onMessage?.removeListener(onRuntimeMessage); stopped = true; close(); observer.disconnect(); window.removeEventListener('focus', onWindowFocus); window.removeEventListener('resize', onResize); document.removeEventListener('pointermove', onResizeMove, true); document.removeEventListener('pointerup', onResizeEnd, true); document.removeEventListener('pointercancel', onResizeEnd, true); document.removeEventListener('mouseover', onOver, true); document.removeEventListener('mouseout', onOut, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', onPointerDown, true); document.querySelectorAll('[data-scholar-hover-badge]').forEach(badge => badge.remove()); document.querySelectorAll<HTMLElement>('[data-scholar-hover-state]').forEach(result => { delete result.dataset.scholarHoverState; }); host.remove(); };
+  contentWindow[INSTANCE_KEY] = cleanup;
+  return cleanup;
 }
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.id && typeof document !== 'undefined') startContentScript();

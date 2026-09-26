@@ -1,6 +1,7 @@
 import type { Generated, Paper, PaperSeed, Resolution } from '../shared/types';
 import { LANGUAGES, type Language } from '../shared/languages';
-import { previewKey } from '../shared/identity';
+import { previewKey, linkPreviewKey } from '../shared/identity';
+import { authorsOverlap, normalizeDoi, normalizeTitle } from '../shared/matching';
 import { createIndexedDBArchive, type ArchiveBackend, type LegacyGeneratedEntry } from './archive';
 
 const CACHE_PREFIX = 'generated:';
@@ -32,7 +33,7 @@ function isPaper(value: unknown): value is Paper {
   return typeof paper.id === 'string' && typeof paper.title === 'string'
     && Array.isArray(paper.authors) && paper.authors.every(author => typeof author === 'string')
     && typeof paper.url === 'string' && typeof paper.sourceUrl === 'string'
-    && ['OpenAlex', 'Crossref', 'Google Scholar', 'Original page'].includes(paper.source ?? '')
+    && ['OpenAlex', 'Crossref', 'Google Scholar', 'Original page', 'Link'].includes(paper.source ?? '')
     && ['matched', 'confirmed', 'unresolved'].includes(paper.matchStatus ?? '');
 }
 
@@ -102,7 +103,16 @@ export function createCache(archive: ArchiveBackend, legacy: LegacyStorage) {
     },
     getPreview(seed: PaperSeed): Promise<Resolution | undefined> {
       return read(async () => {
-        const value = await archive.getPreview(previewKey(seed));
+        let value = await archive.getPreview(previewKey(seed));
+        if (value === undefined && !seed.linkOnly) {
+          const alias = await archive.getPreview(linkPreviewKey(seed.url));
+          if (alias !== undefined && !isResolution(alias)) throw new Error(READ_ERROR);
+          if (isResolution(alias) && alias.paper.matchStatus !== 'unresolved' && !alias.candidates.length
+            && normalizeTitle(alias.paper.title) === normalizeTitle(seed.title)
+            && seed.year !== undefined && seed.year === alias.paper.year && authorsOverlap(seed.authors, alias.paper.authors)
+            && (!seed.doi || normalizeDoi(seed.doi) === normalizeDoi(alias.paper.doi))
+            && (seed.preprint === undefined || seed.preprint === alias.paper.preprint)) value = alias;
+        }
         if (value === undefined) return undefined;
         if (!isResolution(value)) throw new Error(READ_ERROR);
         return value;
@@ -112,6 +122,11 @@ export function createCache(archive: ArchiveBackend, legacy: LegacyStorage) {
       return write(async () => {
         if (!isResolution(resolution)) throw new Error(WRITE_ERROR);
         await archive.putPreview(previewKey(seed), resolution);
+        // A verified exact destination is reusable when linked from another site.
+        // Never alias an ambiguous Scholar candidate to a URL-only preview.
+        if (!seed.linkOnly && resolution.paper.matchStatus !== 'unresolved' && !resolution.candidates.length) {
+          await archive.putPreview(linkPreviewKey(seed.url), resolution);
+        }
       });
     },
     clearCache(): Promise<void> {

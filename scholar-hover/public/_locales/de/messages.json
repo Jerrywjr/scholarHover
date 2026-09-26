@@ -1,5 +1,5 @@
 {
   "extensionName": { "message": "Scholar Hover · Artikelvorschau" },
-  "extensionDescription": { "message": "Artikelvorschau auf Google Scholar: belegte Abstracts, Übersetzungen und Zusammenfassungen mit eigenem API-Schlüssel." },
-  "actionTitle": { "message": "Scholar-Hover-Einstellungen öffnen" }
+  "extensionDescription": { "message": "Artikelvorschau auf HTTPS-Websites mit belegten Abstracts und Übersetzungen. Standardmäßig aus; mit eigenem API-Schlüssel." },
+  "actionTitle": { "message": "Scholar-Hover-Schalter öffnen" }
 }

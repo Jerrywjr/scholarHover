@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { prepareBrowserFixture, enableHoverFixture } from './browser-fixture.mjs';
 
 const results = path.resolve('test-results');
 await mkdir(results, { recursive: true });
@@ -81,7 +82,7 @@ const server = createServer((request, response) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 server.unref();
 const fixtureOrigin = `http://127.0.0.1:${server.address().port}`;
-const extension = path.resolve('dist');
+const extension = await prepareBrowserFixture(profile);
 const launchOptions = {
   channel: 'chromium', headless: true, viewport: { width: 1280, height: 900 },
   acceptDownloads: true, downloadsPath: downloads, ignoreHTTPSErrors: true,
@@ -109,7 +110,7 @@ try {
     globalThis.__requests = [];
     globalThis.__modelFixture = { hold: false, fail: false };
     globalThis.__metadataFixture = { holdTitle: '' };
-    chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://model.test/*' || origin.startsWith('https://api.openalex.org')) ?? false;
+    chrome.permissions.contains = async ({ origins }) => origins?.every(origin => origin === 'https://*/*' || origin === 'https://model.test/*' || origin.startsWith('https://api.openalex.org')) ?? false;
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(String(input));
       globalThis.__requests.push({ host: url.host, path: url.pathname, body: init.body ? JSON.parse(init.body) : null });
@@ -169,6 +170,7 @@ try {
     };
   }, fixtureOrigin);
   await installWorkerFixture(worker);
+  await enableHoverFixture(context, id);
 
   const options = await context.newPage();
   const downloadControl = await context.newCDPSession(options);
@@ -692,6 +694,7 @@ try {
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 15000 });
   assert.equal(new URL(worker.url()).host, id, 'The restarted browser must use the same installed extension and storage origin');
   await installWorkerFixture(worker);
+  await enableHoverFixture(context, id);
   await context.route('https://scholar.google.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
   const restartedKeys = await worker.evaluate(async () => ({ local: (await chrome.storage.local.get(null)).apiKey, session: (await chrome.storage.session.get(null)).apiKey }));
   check('real browser restart clears the session API key', restartedKeys.local === undefined && restartedKeys.session === undefined);

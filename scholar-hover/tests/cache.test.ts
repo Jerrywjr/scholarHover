@@ -206,3 +206,28 @@ describe('durable generated and preview archive', () => {
     expect(state.local).toEqual({ settings: { model: 'm' }, savedCollection: { revision: 1, items: [{ id: 'saved' }] } });
   });
 });
+
+it('makes a verified Scholar preview available from the same URL on another website', async () => {
+  const state = setup();
+  await state.cache.putPreview(seed, resolution);
+  const link = { title: 'Read article', authors: [], url: seed.url, linkOnly: true as const };
+  expect(await state.reopen().getPreview(link)).toEqual(resolution);
+  expect(await state.reopen().getPreview({ ...link, url: seed.url + '?version=2' })).toBeUndefined();
+});
+
+it('persists unverified link previews without mislabeling them as Google Scholar', async () => {
+  const state = setup();
+  const link = { title: 'Paper link', authors: [], url: seed.url, linkOnly: true as const };
+  const linked: Resolution = { paper: { ...resolution.paper, source: 'Link', matchStatus: 'unresolved' }, candidates: [] };
+  await state.cache.putPreview(link, linked);
+  expect(await state.reopen().getPreview({ ...link, title: 'Different label' })).toEqual(linked);
+});
+
+it('reuses a verified link preview on Scholar only when the displayed metadata agrees', async () => {
+  const state = setup();
+  const link = { title: 'Read article', authors: [], url: seed.url, linkOnly: true as const };
+  await state.cache.putPreview(link, resolution);
+  expect(await state.cache.getPreview(seed)).toEqual(resolution);
+  expect(await state.cache.getPreview({ ...seed, title: 'An unrelated paper' })).toBeUndefined();
+  expect(await state.cache.getPreview({ ...seed, year: 2021 })).toBeUndefined();
+});

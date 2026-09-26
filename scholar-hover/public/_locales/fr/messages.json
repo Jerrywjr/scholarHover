@@ -1,5 +1,5 @@
 {
   "extensionName": { "message": "Scholar Hover · Aperçu d’articles" },
-  "extensionDescription": { "message": "Prévisualisez les articles Google Scholar : résumés sourcés, traductions et synthèses. Utilisez votre clé API." },
-  "actionTitle": { "message": "Ouvrir les paramètres de Scholar Hover" }
+  "extensionDescription": { "message": "Aperçus d’articles sur HTTPS : résumés sourcés et traductions. Désactivés par défaut ; utilisez votre clé API." },
+  "actionTitle": { "message": "Ouvrir le commutateur Scholar Hover" }
 }

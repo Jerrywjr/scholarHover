@@ -107,7 +107,8 @@ describe('worker request boundary', () => {
     expect(await router({ type: 'GET_COLLECTION' }, manager)).toMatchObject({ ok: true, data: { items: [{ generated: { titleTranslated: '刚完成的译文' } }] } });
   });
   it('rejects configuration mutations from web content and wrong extension senders', async () => {
-    const { router } = setup();
+    const { deps, router } = setup();
+    deps.hasPermission = async () => false;
     expect((await router({ type: 'CLEAR_KEYS' }, sender)).ok).toBe(false);
     expect((await router({ type: 'GET_SETTINGS' }, { ...sender, id: 'another' })).ok).toBe(false);
     expect((await router({ type: 'GET_SETTINGS' }, { ...sender, url: 'https://scholar.google.com.evil/scholar' })).ok).toBe(false);
@@ -513,4 +514,101 @@ it('restores result badges from local state without resolving or generating any 
   expect((await router({ type: 'GET_PREVIEW_STATES', seeds: [seed] }, manager)).ok).toBe(false);
   deps.getPreview = async () => { throw new Error('Archive unavailable'); };
   expect(await router({ type: 'GET_PREVIEW_STATES', seeds: [seed, unseen] }, sender)).toEqual({ ok: true, data: ['saved', 'unknown'] });
+});
+
+it('previews and immediately saves a plain link from a permitted non-Scholar website', async () => {
+  const { deps, router } = setup();
+  const link = { title: 'PDF', authors: [], url: 'https://arxiv.org/pdf/2608.23179v1', linkOnly: true };
+  const web = { ...sender, url: 'https://www.nature.com/articles/example', frameId: 0 };
+  deps.resolvePaper = vi.fn(async () => ({ paper, candidates: [], lookupVersion: 2 }));
+  expect(await router({ type: 'RESOLVE', seed: link }, web)).toMatchObject({ ok: true, data: { paper } });
+  expect(deps.resolvePaper).toHaveBeenCalledWith(expect.objectContaining({ linkOnly: true }), '');
+  expect(await router({ type: 'SAVE_PAPER', seed: link }, web)).toMatchObject({ ok: true, data: { seed: { linkOnly: true } } });
+  await router.idle();
+});
+
+it('rejects ungranted origins, subframes, and every new preview request after switch-off', async () => {
+  const { deps, router } = setup();
+  const settings = await deps.readSettings();
+  deps.resolvePaper = vi.fn(deps.resolvePaper); deps.generate = vi.fn(deps.generate);
+  deps.hasPermission = async () => false;
+  expect((await router({ type: 'RESOLVE', seed }, { ...sender, url: 'https://www.nature.com/' })).ok).toBe(false);
+  deps.hasPermission = async () => true;
+  expect((await router({ type: 'RESOLVE', seed }, { ...sender, frameId: 2 })).ok).toBe(false);
+  deps.readSettings = async () => ({ ...settings, hoverEnabled: false });
+  for (const type of ['RESOLVE', 'GET_PREVIEW', 'GET_PREVIEW_STATES', 'GENERATE', 'SAVE_PAPER']) {
+    expect((await router({ type, seed, seeds: [seed], paperId: paper.id }, sender)).ok).toBe(false);
+  }
+  expect((await router({ type: 'GET_SETTINGS' }, sender)).ok).toBe(true);
+  expect(deps.resolvePaper).not.toHaveBeenCalled(); expect(deps.generate).not.toHaveBeenCalled();
+});
+
+it('restricts the global switch to the exact popup and keeps privileged settings off webpages', async () => {
+  const { deps, router } = setup();
+  let enabled = false;
+  deps.getHoverState = async () => ({ enabled, hasAccess: true });
+  deps.setHoverEnabled = async next => ({ enabled: enabled = next, hasAccess: true });
+  const popup = { id: 'ext', url: 'chrome-extension://ext/popup.html' } as chrome.runtime.MessageSender;
+  expect(await router({ type: 'GET_HOVER_STATE' }, popup)).toMatchObject({ ok: true, data: { enabled: false } });
+  expect((await router({ type: 'SET_HOVER_ENABLED', enabled: true }, sender)).ok).toBe(false);
+  expect((await router({ type: 'SET_HOVER_ENABLED', enabled: 'true' }, popup)).ok).toBe(false);
+  expect(await router({ type: 'SET_HOVER_ENABLED', enabled: true }, popup)).toMatchObject({ ok: true, data: { enabled: true } });
+  expect((await router({ type: 'CLEAR_KEYS' }, popup)).ok).toBe(false);
+  expect((await router({ type: 'SET_HOVER_ENABLED', enabled: false }, { ...popup, url: popup.url + '?fake' })).ok).toBe(false);
+  expect((await router({ type: 'SAVE_SETTINGS', settings: await deps.readSettings() }, { ...sender, url: 'https://www.nature.com/' })).ok).toBe(false);
+});
+
+it('finds a previously saved Scholar paper by the same exact destination before generic-link lookup', async () => {
+  const { deps, router } = setup();
+  await deps.collection.save(paper, undefined, { seed, sourceKey: previewKey(seed) });
+  deps.resolvePaper = vi.fn(deps.resolvePaper);
+  const link = { title: 'Read article', authors: [], url: seed.url, linkOnly: true };
+  expect(await router({ type: 'GET_PREVIEW', seed: link }, { ...sender, url: 'https://www.nature.com/' })).toMatchObject({ ok: true, data: { saved: { paper } } });
+  await router({ type: 'SAVE_PAPER', seed: link }, { ...sender, url: 'https://www.nature.com/' });
+  await router.idle();
+  expect((await deps.collection.list()).items).toHaveLength(1);
+  expect(deps.resolvePaper).not.toHaveBeenCalled();
+});
+
+it.each(['RESOLVE', 'GENERATE'] as const)('checks OFF again before starting an external %s after a delayed local read', async type => {
+  const { deps, router } = setup();
+  const settings = await deps.readSettings();
+  let enabled = true;
+  deps.readSettings = async () => ({ ...settings, hoverEnabled: enabled });
+  if (type === 'GENERATE') await router({ type: 'RESOLVE', seed }, sender);
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  let started = false;
+  if (type === 'RESOLVE') deps.getPreview = async () => { started = true; await waiting; return undefined; };
+  else deps.getCached = async () => { started = true; await waiting; return undefined; };
+  deps.resolvePaper = vi.fn(deps.resolvePaper); deps.generate = vi.fn(deps.generate);
+  const request = router({ type, seed, paperId: paper.id }, sender);
+  await vi.waitFor(() => expect(started).toBe(true));
+  enabled = false; release();
+  expect((await request).ok).toBe(false);
+  expect(deps.resolvePaper).not.toHaveBeenCalled(); expect(deps.generate).not.toHaveBeenCalled();
+});
+
+it('deduplicates an unfinished generic save when Scholar later saves its exact URL', async () => {
+  const { deps, router } = setup();
+  const generic = { title: 'PDF', authors: [], url: seed.url, linkOnly: true as const };
+  await deps.collection.save({ ...paper, ...generic, id: 'link-original', abstract: undefined, source: 'Link', matchStatus: 'unresolved' }, undefined,
+    { seed: generic, sourceKey: previewKey(generic), completion: { status: 'needs-configuration', updatedAt: 1 } });
+  const result = await router({ type: 'SAVE_PAPER', seed }, sender);
+  expect(result).toMatchObject({ ok: true, data: { id: 'link-original' } });
+  expect((await deps.collection.list()).items).toHaveLength(1);
+});
+
+it('finishes explicitly saved work after turning hover off', async () => {
+  const { deps, router } = setup();
+  const settings = await deps.readSettings();
+  let enabled = true;
+  deps.readSettings = async () => ({ ...settings, hoverEnabled: enabled });
+  let release!: (value: Resolution) => void;
+  deps.resolvePaper = () => new Promise<Resolution>(resolve => { release = resolve; });
+  await router({ type: 'SAVE_PAPER', seed }, sender);
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+  enabled = false; release({ paper, candidates: [], lookupVersion: 2 });
+  await router.idle();
+  expect((await deps.collection.list()).items[0]).toMatchObject({ completion: { status: 'ready' }, generated: { titleTranslated: '证据与不确定性' } });
 });

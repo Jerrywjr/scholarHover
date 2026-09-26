@@ -36,7 +36,7 @@ function publicUrl(value: string): URL | undefined {
   } catch { return undefined; }
 }
 
-/** Normalize only supported arXiv article routes; publisher query strings survive. */
+/** Normalize known article/PDF equivalents; publisher query strings survive. */
 export function normalizeSourceUrl(value: string): string | undefined {
   const url = publicUrl(value.replace(/^http:\/\/((?:(?:www|export)\.)?arxiv\.org)\//i, 'https://$1/'));
   if (!url) return undefined;
@@ -48,6 +48,9 @@ export function normalizeSourceUrl(value: string): string | undefined {
   if (['doi.org', 'dx.doi.org'].includes(url.hostname) && /^\/10\.48550\/arxiv\./i.test(url.pathname)) {
     const identity = arxivIdentity(url.pathname.replace(/^\/10\.48550\/arxiv\./i, ''));
     return identity ? `https://arxiv.org/abs/${identity.id}` : undefined;
+  }
+  if (['nature.com', 'www.nature.com'].includes(url.hostname) && /^\/articles\/[a-z0-9-]+\.pdf$/i.test(url.pathname)) {
+    url.pathname = url.pathname.slice(0, -4);
   }
   url.hash = '';
   return url.href;
@@ -134,6 +137,26 @@ function extractYear(value: unknown): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+/** Nature exposes its abstract separately from subscription/access notices. */
+function natureAbstract(document: Document, sourceUrl: string, hasCitationTitle: boolean): { text: string; url: string } | undefined {
+  const url = new URL(sourceUrl);
+  if (!hasCitationTitle || !['nature.com', 'www.nature.com'].includes(url.hostname)
+    || !/^\/articles\/[a-z0-9-]+$/i.test(url.pathname)) return undefined;
+  const headings = [...document.querySelectorAll('section h2,section h3')]
+    .filter(heading => cleanText(heading)?.toLowerCase() === 'abstract');
+  if (headings.length !== 1) return undefined;
+  const heading = headings[0];
+  const section = heading.closest('section');
+  const content = section?.querySelector('#Abs1-content,.c-article-section__content');
+  // Never read an entire section, which can include access notices or teasers.
+  if (!content || content.contains(heading) || content.querySelector('h2,h3')) return undefined;
+  const separated = content.cloneNode(true) as Element;
+  separated.querySelectorAll('p,div,br,li').forEach(block => block.append(' '));
+  const text = cleanText(separated);
+  if (!text || text.length > MAX_ABSTRACT_LENGTH) return undefined;
+  return { text, url: `${sourceUrl}#${heading.id || 'abstract'}` };
+}
+
 /**
  * Parse detached, inert HTML only. Generic pages need citation metadata or a
  * ScholarlyArticle plus title and DOI / author-year corroboration. Arbitrary
@@ -144,6 +167,7 @@ export function extractSourcePaper(html: string, pageUrl: string, seed: PaperSee
   if (!html.trim() || html.length > MAX_HTML_LENGTH) return undefined;
   const sourceUrl = normalizeSourceUrl(pageUrl);
   if (!sourceUrl) return undefined;
+  if (seed.linkOnly && normalizeSourceUrl(seed.url) !== sourceUrl) return undefined;
   const arxiv = urlIdentity(sourceUrl);
   const seedArxiv = urlIdentity(normalizeSourceUrl(seed.url));
   if (seedArxiv && (!arxiv || identitiesConflict(seedArxiv, arxiv)
@@ -154,19 +178,25 @@ export function extractSourcePaper(html: string, pageUrl: string, seed: PaperSee
     || document.querySelector('input[type="password"],.g-recaptcha,#challenge-form')) return undefined;
   const meta = metadata(document);
   const first = (...keys: string[]): string | undefined => keys.map(key => meta.get(key)?.[0]).find(Boolean);
-  const articles = scholarlyArticles(document).filter(article => normalizeTitle(plainText(article.headline ?? article.name) ?? '') === normalizeTitle(seed.title));
+  const articles = scholarlyArticles(document).filter(article => seed.linkOnly
+    || normalizeTitle(plainText(article.headline ?? article.name) ?? '') === normalizeTitle(seed.title));
   if (articles.length > 1) return undefined;
   const article = articles[0];
-  const title = plainText(first('citation_title', 'dc.title'))
-    ?? (arxiv ? cleanText(document.querySelector('h1.title'))?.replace(/^title\s*:\s*/i, '') : undefined)
+  const title = plainText(seed.linkOnly ? first('citation_title') : first('citation_title', 'dc.title'))
+    ?? (arxiv && !seed.linkOnly ? cleanText(document.querySelector('h1.title'))?.replace(/^title\s*:\s*/i, '') : undefined)
     ?? plainText(article?.headline ?? article?.name);
-  if (!title || !normalizeTitle(seed.title) || normalizeTitle(title) !== normalizeTitle(seed.title)) return undefined;
+  if (!title || !normalizeTitle(title)) return undefined;
+  if (!seed.linkOnly && (!normalizeTitle(seed.title) || normalizeTitle(title) !== normalizeTitle(seed.title))) return undefined;
+  if (seed.linkOnly && ((meta.get('citation_title') ?? []).some(value => normalizeTitle(plainText(value) ?? '') !== normalizeTitle(title))
+    || (article && normalizeTitle(plainText(article.headline ?? article.name) ?? '') !== normalizeTitle(title)))) return undefined;
 
   const authors = [...new Set((meta.get('citation_author') ?? []).map(authorName).filter((value): value is string => Boolean(value)))];
   if (!authors.length && article) authors.push(...jsonAuthors(article.author));
   if (!authors.length && arxiv) authors.push(...[...document.querySelectorAll('.authors a')].map(cleanText).filter((value): value is string => Boolean(value)));
   if (authors.length && seed.authors.length && !authorsOverlap(seed.authors, authors)) return undefined;
   const year = extractYear(first('citation_date', 'citation_publication_date', 'dc.date', 'dc.date.issued') ?? article?.datePublished);
+  if (seed.linkOnly && ((seed.authors.length && !authorsOverlap(seed.authors, authors))
+    || (seed.year !== undefined && seed.year !== year))) return undefined;
   const seedDoi = normalizeDoi(seed.doi);
   const statedDois = [...(meta.get('citation_doi') ?? []), ...(meta.get('dc.identifier.doi') ?? []),
     jsonDoi(article?.identifier), jsonDoi(article?.sameAs)].map(value => normalizeDoi(value)).filter((value): value is string => Boolean(value));
@@ -203,7 +233,7 @@ export function extractSourcePaper(html: string, pageUrl: string, seed: PaperSee
     if (new Set(statedDois).size > 1) return undefined;
     if (seedDoi && statedDoi && seedDoi !== statedDoi) return undefined;
     const doiMatch = Boolean(seedDoi && seedDoi === statedDoi);
-    if (!doiMatch && (!seed.year || seed.year !== year || !authorsOverlap(seed.authors, authors))) return undefined;
+    if (!seed.linkOnly && !doiMatch && (!seed.year || seed.year !== year || !authorsOverlap(seed.authors, authors))) return undefined;
     const venue = first('citation_journal_title');
     const isKnownPreprint = /(?:^|\.)(?:biorxiv|medrxiv|arxiv)\.org$/.test(new URL(sourceUrl).hostname)
       || Boolean(venue && /(?:arxiv|biorxiv|medrxiv|preprints?)/i.test(venue));
@@ -215,10 +245,12 @@ export function extractSourcePaper(html: string, pageUrl: string, seed: PaperSee
       if (downloadUrl && preprint === false && urlIdentity(normalizeSourceUrl(downloadUrl))) downloadUrl = undefined;
     }
   }
+  const publisherAbstract = natureAbstract(document, sourceUrl, Boolean(first('citation_title')));
   const rawAbstract = (arxiv ? cleanText(document.querySelector('blockquote.abstract')) : undefined)
     ?? plainText(first('citation_abstract', 'dcterms.abstract'))
     ?? (arxiv ? plainText(first('dc.description')) : undefined)
-    ?? plainText(article?.abstract);
+    ?? plainText(article?.abstract)
+    ?? publisherAbstract?.text;
   const abstract = rawAbstract?.replace(/^abstract\s*:\s*/i, '').trim();
   return {
     id: arxiv ? `arxiv:${arxiv.id}` : `source:${sourceUrl}`,
@@ -227,6 +259,7 @@ export function extractSourcePaper(html: string, pageUrl: string, seed: PaperSee
     url: sourceUrl, sourceUrl, source: 'Original page', matchStatus: 'matched', preprint, doi,
     ...(abstract && abstract.length <= MAX_ABSTRACT_LENGTH ? { abstract } : {}),
     ...(downloadUrl ? { downloadUrl, downloadVersion } : {}),
-    sources: [{ name: 'Original page', url: sourceUrl }],
+    sources: [{ name: 'Original page', url: sourceUrl },
+      ...(publisherAbstract && rawAbstract === publisherAbstract.text ? [{ name: 'Original page · Abstract', url: publisherAbstract.url }] : [])],
   };
 }

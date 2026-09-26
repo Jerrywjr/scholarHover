@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title data-i18n="pageTitle">知阅 · 悬停预览</title>
+  <style>
+    :root { color:#172b3a; background:#f4f7f8; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+    * { box-sizing:border-box; } body { margin:0; width:360px; } main { padding:20px; } header { border-left:4px solid #0d6f78; padding-left:12px; margin-bottom:18px; } header p { color:#58707b; font-size:12px; margin:0; } h1 { color:#102a43; font-size:21px; margin:0 0 3px; } section { background:white; border:1px solid #dce7e9; border-radius:12px; padding:16px; box-shadow:0 4px 16px rgba(20,48,64,.06); } h2 { font-size:16px; margin:0 0 6px; color:#12384a; } p { margin:0 0 12px; } button { background:#0d6f78; border:1px solid #0d6f78; border-radius:7px; color:white; cursor:pointer; font:inherit; padding:9px 12px; } button:disabled { cursor:not-allowed; opacity:.6; } button:focus-visible { outline:3px solid rgba(21,150,166,.35); outline-offset:3px; } #hover-toggle { width:100%; font-size:17px; font-weight:650; margin:8px 0 12px; min-height:46px; } #hover-toggle[aria-checked="false"] { background:#fff; color:#185262; border-color:#bfd1d6; } .hint { color:#506872; font-size:12px; } .privacy { background:#f0f8f8; border-radius:8px; padding:10px; color:#315661; } #status { font-size:12px; color:#42616b; margin:0; } #status[data-state="error"] { color:#9b3b31; } #retry { margin-top:10px; } nav { display:flex; gap:8px; margin-top:14px; } nav button { flex:1; background:white; color:#185262; } footer { color:#617783; font-size:11px; margin-top:14px; } [hidden] { display:none!important; }
+  </style>
+</head>
+<body>
+  <main id="popup" aria-busy="true">
+    <header><h1 data-i18n="brand">知阅 ScholarHover</h1><p data-i18n="introduction">开启后，在 HTTPS 网页悬停论文链接即可预览。</p></header>
+    <section aria-labelledby="switch-heading">
+      <h2 id="switch-heading" data-i18n="heading">悬停预览</h2>
+      <button id="hover-toggle" type="button" role="switch" aria-checked="false" aria-label="悬停预览" disabled>正在读取状态…</button>
+      <p class="hint" data-i18n="access"></p>
+      <p class="hint privacy" data-i18n="privacy"></p>
+      <p class="hint" data-i18n="offNotice"></p>
+      <p id="status" role="status" aria-live="polite"></p>
+      <button id="retry" type="button" data-i18n="retry" hidden>重试</button>
+    </section>
+    <nav><button id="open-settings" type="button" data-i18n="settings">设置</button><button id="open-collection" type="button" data-i18n="collection">已保存论文</button></nav>
+    <footer data-i18n="support"></footer>
+  </main>
+  <script type="module" src="/src/popup/index.ts"></script>
+</body>
+</html>

@@ -6,19 +6,21 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { prepareBrowserFixture, enableHoverFixture } from './browser-fixture.mjs';
 
-// Isolated packaged-extension regression. Metadata fetch alone is replaced;
-// permissions, message routing, offscreen DOMParser, storage, UI and the model
-// worker are real. The model endpoint is a disposable loopback HTTPS server.
+// Isolated packaged-extension regression. Source/index fetches are replaced;
+// HTTPS activation is pre-granted in a copied fixture manifest, and one publisher
+// permission is explicitly denied below. Message routing, offscreen DOMParser,
+// storage, UI and the model worker are real. The model server is disposable.
 const root = fileURLToPath(new URL('..', import.meta.url));
-const extension = path.join(root, 'dist');
-const manifest = JSON.parse(await readFile(path.join(extension, 'manifest.json'), 'utf8'));
+const manifest = JSON.parse(await readFile(path.join(root, 'dist', 'manifest.json'), 'utf8'));
 assert.ok(manifest.host_permissions.includes('https://arxiv.org/*'), 'Build the source-reading extension before running this regression');
 const title = 'NetConfArena: An Executable Benchmark for LLM Agents in Closed-Loop Network Configuration';
 const abstract = 'We introduce NetConfArena, an executable benchmark for LLM agents in closed-loop network configuration. The environment evaluates configuration changes and observes actual network outcomes. This is an artificial regression fixture, not the paper’s published abstract. ABSTRACT_FIXTURE_END';
 const translated = 'NetConfArena 的离线测试摘要译文。TRANSLATION_FIXTURE_END';
 const summary = '该离线夹具用于验证原文摘要获取、后台生成和本地缓存。';
 const profile = await mkdtemp(path.join(tmpdir(), 'scholar-hover-source-e2e-'));
+const extension = await prepareBrowserFixture(profile);
 let context;
 let modelServer;
 let worker;
@@ -121,12 +123,20 @@ try {
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 15_000 });
   const extensionId = new URL(worker.url()).hostname;
   await installFetchBoundary(worker);
+  await enableHoverFixture(context, extensionId);
   await worker.evaluate(async () => {
     await chrome.storage.local.set({ settings: { uiLanguage: 'en', outputLanguage: 'zh-CN', autoGenerate: false,
       consent: false, rememberKey: false, baseUrl: '', model: '' } });
   });
   check('Native manifest permission grants arXiv access', await worker.evaluate(() => chrome.permissions.contains({ origins: ['https://arxiv.org/*'] })));
-  check('Unapproved publisher permission is genuinely absent', !await worker.evaluate(() => chrome.permissions.contains({ origins: ['https://journal.example/*'] })));
+  // The disposable manifest pre-grants HTTPS for activation without a native
+  // dialog. Deny only this publisher at the permission boundary; arXiv, model
+  // origin, routing, parsing and storage still use their real browser behavior.
+  await worker.evaluate(() => {
+    const contains = chrome.permissions.contains.bind(chrome.permissions);
+    chrome.permissions.contains = async permissions => permissions.origins?.includes('https://journal.example/*') ? false : contains(permissions);
+  });
+  check('Controlled unapproved publisher permission is absent', !await worker.evaluate(() => chrome.permissions.contains({ origins: ['https://journal.example/*'] })));
   check('MV3 service worker has no DOMParser', await worker.evaluate(() => typeof DOMParser === 'undefined'));
 
   const first = await openScholar(1, 'source-first');
@@ -227,6 +237,7 @@ try {
   context = await chromium.launchPersistentContext(profile, launchOptions);
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 15_000 });
   await installFetchBoundary(worker);
+  await enableHoverFixture(context, extensionId);
   check('Restart keeps the same extension storage identity', new URL(worker.url()).hostname === extensionId);
   check('Restart clears the artificial session credential', await worker.evaluate(async () => !(await chrome.storage.session.get('apiKey')).apiKey));
   const restarted = await openScholar(4, 'browser-restarted');

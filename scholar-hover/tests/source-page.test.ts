@@ -47,6 +47,9 @@ describe('normalizeSourceUrl', () => {
     ['https://arxiv.org/pdf/hep-th/9901001v2', 'https://arxiv.org/abs/hep-th/9901001v2'],
     ['https://arxiv.org/abs/math.GT/0309136', 'https://arxiv.org/abs/math.GT/0309136'],
     ['https://doi.org/10.48550/arXiv.2608.23179', 'https://arxiv.org/abs/2608.23179'],
+    ['https://www.nature.com/articles/nature14539.pdf#page=2', 'https://www.nature.com/articles/nature14539'],
+    ['https://www.nature.com/articles/s41586-024-01234-5.pdf?download=1', 'https://www.nature.com/articles/s41586-024-01234-5?download=1'],
+    ['https://journal.example/articles/nature14539.pdf', 'https://journal.example/articles/nature14539.pdf'],
     ['https://journal.example/article?id=42&lang=en', 'https://journal.example/article?id=42&lang=en'],
   ])('normalizes %s while preserving paper identity', (input, expected) => {
     expect(normalizeSourceUrl(input)).toBe(expected);
@@ -69,6 +72,47 @@ describe('normalizeSourceUrl', () => {
 });
 
 describe('extractSourcePaper', () => {
+  it('resolves a direct arXiv PDF label to the paper metadata at the same normalized URL', () => {
+    const link: PaperSeed = { title: 'PDF', authors: [], url: 'https://arxiv.org/pdf/2608.23179v2.pdf', linkOnly: true };
+    expect(extractSourcePaper(arxivHtml().replaceAll('2608.23179', '2608.23179v2'), 'https://arxiv.org/abs/2608.23179v2', link))
+      .toMatchObject({ title: seed.title, abstract, downloadVersion: 'submittedVersion (v2)' });
+  });
+  it('resolves shortened publisher link text only for the exact linked URL', () => {
+    const link: PaperSeed = { title: 'Read this paper', authors: [], url: publisherSeed.url, linkOnly: true };
+    const html = publisherHtml('<meta name="citation_abstract" content="Verified paper abstract.">');
+    expect(extractSourcePaper(html, link.url, link)).toMatchObject({ title: publisherSeed.title, abstract: 'Verified paper abstract.' });
+    expect(extractSourcePaper(html, 'https://journal.example/article/another', link)).toBeUndefined();
+    expect(extractSourcePaper(html, link.url, { ...link, linkOnly: undefined })).toBeUndefined();
+  });
+  it('accepts a unique ScholarlyArticle but rejects ambiguous identities and citation title conflicts', () => {
+    const link: PaperSeed = { title: 'Read more', authors: [], url: publisherSeed.url, linkOnly: true };
+    const article = { '@type': 'ScholarlyArticle', headline: publisherSeed.title, abstract: 'Explicit abstract.' };
+    const json = (value: unknown) => `<script type="application/ld+json">${JSON.stringify(value)}</script>`;
+    expect(extractSourcePaper(json(article), link.url, link)?.title).toBe(publisherSeed.title);
+    expect(extractSourcePaper(json([article, { ...article, headline: 'Another paper' }]), link.url, link)).toBeUndefined();
+    expect(extractSourcePaper(publisherHtml(json({ ...article, headline: 'Another paper' })), link.url, link)).toBeUndefined();
+    expect(extractSourcePaper('<meta name="dc.title" content="Just a website"><meta property="og:description" content="Teaser">', link.url, link)).toBeUndefined();
+  });
+  it.each([
+    { authors: ['Bob Jones'] }, { year: 2025 }, { doi: '10.5555/another' },
+  ])('retains supplied publisher corroboration checks for direct links: %s', extra => {
+    const link: PaperSeed = { title: 'PDF', authors: [], url: publisherSeed.url, linkOnly: true, ...extra };
+    expect(extractSourcePaper(publisherHtml(''), link.url, link)).toBeUndefined();
+  });
+  it('reads only the Nature Abstract content and records its location as provenance', () => {
+    const link: PaperSeed = { title: 'Deep learning…', authors: [], url: 'https://www.nature.com/articles/nature14539.pdf', linkOnly: true };
+    const html = `<meta name="citation_title" content="Deep learning"><meta name="citation_journal_title" content="Nature">
+      <section aria-labelledby="Abs1"><h2 id="Abs1">Abstract</h2><div id="Abs1-content"><p>Models learn representations.</p><p>We evaluate multiple layers.</p></div></section>
+      <section><h2>Access options</h2><p>Subscribe to read the article.</p></section><meta property="og:description" content="Teaser">`;
+    expect(extractSourcePaper(html, 'https://www.nature.com/articles/nature14539', link)).toMatchObject({
+      title: 'Deep learning', abstract: 'Models learn representations. We evaluate multiple layers.',
+      sources: expect.arrayContaining([{ name: 'Original page · Abstract', url: 'https://www.nature.com/articles/nature14539#Abs1' }]),
+    });
+    expect(extractSourcePaper(html.replace('id="Abs1-content"', 'class="c-article-section__content"'), 'https://www.nature.com/articles/nature14539', link)?.abstract)
+      .toBe('Models learn representations. We evaluate multiple layers.');
+    expect(extractSourcePaper(html.replace('<h2 id="Abs1">Abstract</h2>', '<h2 id="Abs1">Summary</h2>'), 'https://www.nature.com/articles/nature14539', link)?.abstract).toBeUndefined();
+    expect(extractSourcePaper(html.replaceAll('citation_title', 'og:title'), 'https://www.nature.com/articles/nature14539', link)).toBeUndefined();
+  });
   it('accepts arXiv citation_author in the actual surname-comma-given-name format', () => {
     const html = arxivHtml().replace('Chang Liu', 'Liu, Chang').replace('Xiaohui Xie', 'Xie, Xiaohui').replace('Xinyi Chen', 'Chen, Xinyi').replace('Yong Cui', 'Cui, Yong');
     expect(extractSourcePaper(html, seed.url, seed)).toMatchObject({ abstract, authors: ['Chang Liu', 'Xiaohui Xie', 'Xinyi Chen', 'Yong Cui'] });

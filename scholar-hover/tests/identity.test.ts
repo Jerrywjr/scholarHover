@@ -32,3 +32,9 @@ describe('preview identity', () => {
     expect(previewKey(one)).not.toBe(previewKey(two));
   });
 });
+
+it('reuses a URL-only link preview across labels and arXiv abstract/PDF routes but keeps versions separate', () => {
+  const link = { title: 'PDF', authors: [], url: 'https://arxiv.org/pdf/2608.23179v1.pdf', linkOnly: true as const };
+  expect(previewKey(link)).toBe(previewKey({ ...link, title: 'Actual full title', url: 'https://arxiv.org/abs/2608.23179v1' }));
+  expect(previewKey(link)).not.toBe(previewKey({ ...link, url: 'https://arxiv.org/pdf/2608.23179v2' }));
+});

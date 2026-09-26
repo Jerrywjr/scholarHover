@@ -81,8 +81,8 @@ export function unresolvedPaper(seed: PaperSeed): Paper {
     ...seed,
     url: safeUrl(seed.url) ?? '',
     id: stableId(seed),
-    source: 'Google Scholar',
-    sourceUrl: safeUrl(seed.url) ?? 'https://scholar.google.com/',
+    source: seed.linkOnly ? 'Link' : 'Google Scholar',
+    sourceUrl: safeUrl(seed.url) ?? (seed.linkOnly ? '' : 'https://scholar.google.com/'),
     matchStatus: 'unresolved',
   };
 }
@@ -215,6 +215,11 @@ export async function resolvePaper(seed: PaperSeed, openAlexKey?: string, reader
   const source = await readSourcePaper(seed, timings, reader);
   const direct = source.paper;
   if (direct?.abstract) return { paper: direct, candidates: [], timings, lookupVersion: 2 };
+  // A link label is not a paper title. Query indexes only after the linked page
+  // established an identity that can be corroborated, never search its label.
+  if (seed.linkOnly && (!direct || (!normalizeDoi(direct.doi) && (!direct.year || !direct.authors.length)))) {
+    return { ...source, paper: direct ?? unresolvedPaper(seed), candidates: [], timings, lookupVersion: 2 };
+  }
   // An arXiv URL identifies a manuscript (and sometimes an exact revision).
   // Indexes cannot verify that revision, so never replace it with another work.
   const sourceUrl = normalizeSourceUrl(seed.url);

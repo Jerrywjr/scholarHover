@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PaperSeed } from '../src/shared/types';
 import { reconstructAbstract, resolvePaper } from '../src/background/metadata';
+import { extractSourcePaper } from '../src/shared/source-page';
+import type { SourceReader } from '../src/background/source';
 
 const seed: PaperSeed = {
   title: 'A Reliable Paper',
@@ -27,6 +29,46 @@ function openAlexWork(overrides: Record<string, unknown> = {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('resolvePaper', () => {
+  const link: PaperSeed = { title: 'Read paper', authors: [], url: 'https://journal.example/article/42', linkOnly: true };
+  const sourceReader: SourceReader = {
+    hasPermission: async () => true,
+    parseHtml: async (html, url, input) => extractSourcePaper(html, url, input),
+  };
+  it('keeps an unrecognized hovered URL as Link without searching the arbitrary link label', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response('<title>Documentation</title><p>No scholarly metadata.</p>', { headers: { 'content-type': 'text/html' } });
+    });
+    const result = await resolvePaper(link, undefined, sourceReader);
+    expect(result.paper).toMatchObject({ title: 'Read paper', source: 'Link', matchStatus: 'unresolved' });
+    expect(result.candidates).toEqual([]);
+    expect(requests).toEqual(['https://journal.example/article/42']);
+  });
+  it('does not query indexes when a direct link lacks source permission', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      throw new Error('Index request must not run');
+    });
+    const result = await resolvePaper(link, undefined, { ...sourceReader, hasPermission: async () => false });
+    expect(result.paper).toMatchObject({ source: 'Link', matchStatus: 'unresolved' });
+    expect(result.sourceAccess?.origin).toBe('https://journal.example');
+    expect(requests).toEqual([]);
+  });
+  it('takes the actual publisher title and abstract before an index lookup', async () => {
+    vi.stubGlobal('fetch', async () => new Response('<meta name="citation_title" content="Actual Full Paper Title"><meta name="citation_abstract" content="Complete explicit abstract.">', { headers: { 'content-type': 'text/html' } }));
+    expect((await resolvePaper(link, undefined, sourceReader)).paper).toMatchObject({ title: 'Actual Full Paper Title', source: 'Original page', abstract: 'Complete explicit abstract.' });
+  });
+  it('retains a recognized direct title without index search when there is no corroborating identity', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response('<meta name="citation_title" content="Actual Full Paper Title">', { headers: { 'content-type': 'text/html' } });
+    });
+    expect((await resolvePaper(link, undefined, sourceReader)).paper).toMatchObject({ title: 'Actual Full Paper Title', source: 'Original page', matchStatus: 'matched' });
+    expect(requests).toEqual(['https://journal.example/article/42']);
+  });
   it('keeps the primary publication PDF without silently choosing an OA manuscript', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => response(openAlexWork({ primary_location: { pdf_url: 'https://journal.test/paper.pdf', landing_page_url: 'https://journal.test/article', version: 'publishedVersion' }, best_oa_location: { pdf_url: 'https://preprint.test/old.pdf', version: 'submittedVersion' } }))));
     expect((await resolvePaper(seed)).paper).toMatchObject({ downloadUrl: 'https://journal.test/paper.pdf', downloadVersion: 'publishedVersion' });

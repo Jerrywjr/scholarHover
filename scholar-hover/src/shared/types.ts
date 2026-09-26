@@ -1,5 +1,7 @@
 import type { Language } from './languages';
 export interface PaperSeed {
+  /** A hovered URL whose label is not verified publication metadata. */
+  linkOnly?: true;
   title: string;
   authors: string[];
   year?: number;
@@ -13,7 +15,7 @@ export interface Paper extends PaperSeed {
   downloadUrl?: string;
   downloadVersion?: string;
   abstract?: string;
-  source: 'OpenAlex' | 'Crossref' | 'Google Scholar' | 'Original page';
+  source: 'OpenAlex' | 'Crossref' | 'Google Scholar' | 'Original page' | 'Link';
   sourceUrl: string;
   sources?: { name: string; url: string }[];
   matchStatus: 'matched' | 'confirmed' | 'unresolved';
@@ -48,10 +50,12 @@ export interface Settings {
   rememberKey: boolean;
 }
 export interface SettingsView extends Settings {
+  hoverEnabled?: boolean;
   hasApiKey: boolean;
   hasOpenAlexKey: boolean;
 }
 export interface Credentials { apiKey: string; openAlexKey: string }
+export interface HoverState { enabled: boolean; hasAccess: boolean }
 export type CompletionStatus = 'queued' | 'resolving' | 'generating' | 'ready' | 'needs-confirmation' | 'needs-configuration' | 'failed' | 'interrupted';
 export interface PaperCompletion { status: CompletionStatus; updatedAt: number; error?: string; refreshMetadata?: boolean }
 export interface SavedPaper {
@@ -90,6 +94,8 @@ export interface ExportBatch {
   markdown: { filename: string; state: DownloadState; downloadId?: number; error?: string };
 }
 export type Request =
+  | { type: 'GET_HOVER_STATE' }
+  | { type: 'SET_HOVER_ENABLED'; enabled: boolean }
   | { type: 'RESOLVE'; seed: PaperSeed; retry?: boolean }
   | { type: 'OPEN_SOURCE_ACCESS'; seed: PaperSeed }
   | { type: 'CONFIRM'; candidateId: string; seed: PaperSeed }

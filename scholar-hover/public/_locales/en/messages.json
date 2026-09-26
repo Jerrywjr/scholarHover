@@ -1,5 +1,5 @@
 {
   "extensionName": { "message": "Scholar Hover · Paper Preview" },
-  "extensionDescription": { "message": "Preview papers on Google Scholar with sourced abstracts, translations and summaries. Bring your own model API key." },
-  "actionTitle": { "message": "Open Scholar Hover settings" }
+  "extensionDescription": { "message": "Preview paper links on supported HTTPS sites with sourced abstracts and translations. Off by default; use your model API key." },
+  "actionTitle": { "message": "Open Scholar Hover switch" }
 }

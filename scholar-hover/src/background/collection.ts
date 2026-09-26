@@ -27,7 +27,7 @@ function validSeed(value: unknown): value is PaperSeed {
 function validPaper(value: unknown): value is Paper {
   if (!record(value) || !validSeed(value)) return false;
   return identifier(value.id) && typeof value.sourceUrl === 'string'
-    && ['OpenAlex', 'Crossref', 'Google Scholar', 'Original page'].includes(value.source as string)
+    && ['OpenAlex', 'Crossref', 'Google Scholar', 'Original page', 'Link'].includes(value.source as string)
     && ['matched', 'confirmed', 'unresolved'].includes(value.matchStatus as string)
     && ['venue', 'doi', 'abstract', 'downloadUrl', 'downloadVersion'].every(key => optionalText(value[key]))
     && (value.sources === undefined || (Array.isArray(value.sources) && value.sources.every(source =>
