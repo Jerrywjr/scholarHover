@@ -1,6 +1,6 @@
 # 0.5.0：跨网站链接悬停与工具栏开关
 
-验证日期：2026-09-26。此版本为本地试用包，未发布到 GitHub Releases 或 Chrome Web Store。公开下载仍为 0.4.0。
+验证日期：2026-09-26。当时验证对象为本地试用包。2026-09-29 以 GitHub 预发布版发布，尚未上架 Chrome Web Store；发布检查与当前安装包见[更新说明](release-notes-0.5.0.md)。
 
 ## 问题、改动与使用方式
 
@@ -66,6 +66,6 @@ npm run test:universal-e2e
 
 ## 安装包检查
 
-本地文件：`release/scholar-hover-0.5.0.zip`，128,384 字节。Manifest 版本为 `0.5.0`，包含 `popup.html` 与 `popup.js`，没有静态 Scholar 专用注入项；必需网站权限仍仅为 arXiv、OpenAlex 和 Crossref，`https://*/*` 位于可选权限列表。包内无 `node_modules`、source map 或 `.env` 文件。
+2026-09-26 本地文件：`release/scholar-hover-0.5.0.zip`，128,384 字节。以下校验值属于当时本地 ZIP；2026-09-29 重新构建发布包的校验值见[更新说明](release-notes-0.5.0.md)，重新打包的时间戳会影响 ZIP 校验值。Manifest 版本为 `0.5.0`，包含 `popup.html` 与 `popup.js`，没有静态 Scholar 专用注入项；必需网站权限仍仅为 arXiv、OpenAlex 和 Crossref，`https://*/*` 位于可选权限列表。包内无 `node_modules`、source map 或 `.env` 文件。
 
 SHA-256：`d0d2e3b1c4a9655951192e0bea36613214e202231239d04bc03ba5d40a4d3de3`。

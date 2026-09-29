@@ -1,26 +1,26 @@
 # 知阅 · 文献悬停助手
 
-在支持的 HTTPS 网页链接上停留片刻，先看清论文，再决定是否打开，包括 Google Scholar、Nature 和 arXiv。桌面 Chrome 扩展，用户自带模型 API Key，无产品账号和自建后端。本地 0.5.0 工作版本新增默认关闭的工具栏开关，支持简体中文、英语、法语和德语，保留本机预览归档与主动收藏后的后台补全，并从目标论文链接读取真实摘要。
+在支持的 HTTPS 网页链接上停留片刻，先看清论文，再决定是否打开，包括 Google Scholar、Nature 和 arXiv。桌面 Chrome 扩展，用户自带模型 API Key，无产品账号和自建后端。0.5.0 新增默认关闭的工具栏开关，支持简体中文、英语、法语和德语，保留本机预览归档与主动收藏后的后台补全，并从目标论文链接读取真实摘要。
 
 [English README](README.md)
 
-**0.5.0 为本地试验版本，尚未发布。** 公开下载仍为 0.4.0。 从 [GitHub Releases](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) 下载后手动安装，尚未提交或上架 Chrome Web Store。真实 Scholar 匹配、翻译质量与筛选价值，以及四种语言的人工和母语使用者审核仍未完成。[0.4.0 测试报告](docs/test-report-0.4.0.md) 记录了自动化检查及其适用范围；不能把构造页面或元数据派生输入的测试结果当作真实 Scholar 匹配准确率。
+**0.5.0 为开源试验版（预发布）。** 从 [GitHub Releases](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0) 下载后手动安装，尚未上架 Chrome Web Store。真实网站提取、翻译质量和筛选价值仍待验证，详见[更新说明与已知问题](docs/release-notes-0.5.0.md)及[测试报告](docs/test-report-0.5.0.md)。
 
 ## 安装与配置
 
-1. 试用本地 0.5.0 时，从当前代码构建并加载 `dist`，或解压本地提供的 `scholar-hover-0.5.0.zip`。公开版本仍在 [v0.4.0 发布页](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) 下载 [scholar-hover-0.4.0.zip](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip)，解压到固定目录，不要只双击 ZIP。请选择扩展安装包，而非 GitHub 自动提供的 Source code 源码压缩包。源码构建后也可直接使用本项目 `dist` 目录。
+1. 从 [v0.5.0 发布页](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0) 下载 [scholar-hover-0.5.0.zip](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip)，解压到固定目录。请选择扩展安装包，而非 GitHub 自动提供的 Source code 源码压缩包；源码构建后也可直接使用 `dist` 目录。
 2. 在 Chrome 地址栏输入 `chrome://extensions`，打开右上角“开发者模式”。
 3. 选择“加载已解压的扩展程序”，选择包含 `manifest.json` 的解压目录或 `dist`。
 4. 点击扩展图标打开工具栏弹窗，再选择“设置”，选择界面语言和生成语言，填写模型 API 基地址、模型名称、API Key；阅读外发说明并勾选同意，尚未被已有 HTTPS 授权覆盖时授予模型域名访问权限；已有授权不替代外发同意。
-5. 本地 0.5.0 返回工具栏弹窗，把悬停开关切为 ON，授予可选的所有 HTTPS 网站访问权限（`https://*/*`），再悬停或聚焦支持页面的链接 500 毫秒。已打开的支持页面无需刷新即可注入脚本；公开 0.4.0 下载仍仅支持 Scholar。
+5. 返回工具栏弹窗，把悬停开关切为 ON，授予可选的所有 HTTPS 网站访问权限（`https://*/*`），再悬停或聚焦支持页面的链接 500 毫秒。已打开的支持页面无需刷新即可注入脚本。
 
 API 地址填写包含版本路径的**基地址**，例如服务商提供的 `https://api.example.com/v1`；程序会追加 `/chat/completions`。不要填写完整的 `/chat/completions` URL。模型名必须使用服务商给出的 API 模型标识。目前仅支持 Chat Completions 纯文本非流式接口，不承诺兼容所有模型服务。连接测试会发起一次很短的模型请求，可能计费。
 
-已发布的 0.4.0 发布页同时提供该版本扩展 ZIP 的 [SHA-256 校验文件](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip.sha256)。
+已发布的 0.5.0 发布页同时提供该版本扩展 ZIP 的 [SHA-256 校验文件](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip.sha256)。
 
-升级已解压扩展时，把新包解压到原先加载的固定目录，在扩展管理页点击重新加载，本地 0.5.0 在工具栏重新开启；公开 0.4.0 则刷新 Scholar 页面。换一个目录重新加载可能会被视为另一扩展实例，需要重新配置。0.4.0 会把现有生成缓存迁入本机 IndexedDB 归档，归档事务提交成功后才清理旧副本；迁移失败保留原始记录。已有配置和收藏保留，译文仅在论文内容与模型配置指纹一致时复用。
+升级已解压扩展时，把新包解压到原先加载的固定目录，在扩展管理页点击重新加载，从 0.4.x 升级后在工具栏开启开关。旧网页仍显示旧面板时刷新一次。换一个目录重新加载可能会被视为另一扩展实例，需要重新配置。0.4.0 会把现有生成缓存迁入本机 IndexedDB 归档，归档事务提交成功后才清理旧副本；迁移失败保留原始记录。已有配置和收藏保留，译文仅在论文内容与模型配置指纹一致时复用。
 
-本地 0.5.0 首次安装或首次从 0.4.x 升级后默认 OFF；之后重新加载或重启浏览器会保留开关状态。工具栏切为 ON 时申请 `https://*/*` 可选权限，访问范围是所有 HTTPS 网站，不再只是某一家出版社，用于读取悬停链接文字与目标论文元数据。OFF 停止新的预览，保留已有归档与收藏，已发起任务可能继续完成。`chrome://`、Chrome 应用商店、内置 PDF 阅读器和限制扩展访问的网页不支持。模型调用仍需已有配置与外发同意。
+0.5.0 首次安装或首次从 0.4.x 升级后默认 OFF；之后重新加载或重启浏览器会保留开关状态。工具栏切为 ON 时申请 `https://*/*` 可选权限，访问范围是所有 HTTPS 网站，不再只是某一家出版社，用于读取悬停链接文字与目标论文元数据。OFF 停止新的预览，保留已有归档与收藏，已发起任务可能继续完成。`chrome://`、Chrome 应用商店、内置 PDF 阅读器和限制扩展访问的网页不支持。模型调用仍需已有配置与外发同意。
 
 ## 语言与使用方式
 
@@ -47,6 +47,8 @@ API 地址填写包含版本路径的**基地址**，例如服务商提供的 `h
 浏览器仍运行时，关闭网页标签页后后台补全会继续。浏览器或扩展后台重启后，排队任务和未完成的元数据查询会恢复；已经进入模型生成的任务优先复用已有匹配结果，没有可用结果时标为“已中断”，需人工重试，因为上次请求可能已经计费。浏览器重启后，会话 Key 需要重新填写。删除条目后，旧补全任务不能把它重新添加，或覆盖后来重新收藏的条目。
 
 收藏独立保存在本机，最多 200 篇、4 MiB，不自动到期；该限制不用于预览与生成归档。“开始新的检索”会清空当前收藏（操作前确认），清空归档不会影响收藏。已下载文件不会因删除收藏而被删除。引用按现有元数据生成，缺失的卷期、页码不补造；BibTeX 使用通用 `misc` 类型，正式使用前请核对。`downloads` 权限用于上述显式下载及该批次状态检查。
+
+**已知未解决问题：** 正常可读的论文仍可能提取失败。“可能需要登录或验证”也用于未识别元数据或身份校验不一致，不能据此判断存在验证码；随后出现的 OpenAlex HTTP 429 是独立的限流或额度问题。本次发布尚未修复这些实际反馈，也未实现读取用户已打开且完成登录的页面。详见[更新说明](docs/release-notes-0.5.0.md)。
 
 ## 数据与边界
 
@@ -77,7 +79,7 @@ npm run package
 
 ## 反馈问题
 
-请在 [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues) 提交问题或功能建议，说明扩展和 Chrome 版本、复现步骤、预期表现与实际表现；必要时附公开论文链接或 DOI。模型问题可提供服务商与 API 模型名，无需提供凭据。Issues 是公开的，上传截图或日志前请移除 API Key、登录信息和私人内容。
+请在 [GitHub Issues](https://github.com/Jerrywjr/scholarHover/issues) 提交问题或功能建议，说明扩展和 Chrome 版本、复现步骤、预期表现与实际表现；必要时附公开论文链接或 DOI。模型问题可提供服务商与 API 模型名，无需提供凭据。Issues 是公开的，上传截图或日志前请移除 API Key、登录信息和私人内容。
 
 欢迎代码和文档贡献；开发流程与语言检查要求见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 

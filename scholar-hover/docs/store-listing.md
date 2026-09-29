@@ -3,10 +3,10 @@
 ## 基本信息
 
 - **扩展名称：** 知阅 · 文献悬停助手
-- **当前状态：** 本地 0.5.0 版本尚未公开发布；公开下载仍为 [0.4.0 开源试验版](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0)。尚未提交或上架 Chrome Web Store，本文仅为商店材料草稿
+- **当前状态：** [0.5.0 开源试验版（预发布）](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0)；尚未提交或上架 Chrome Web Store，本文仅为商店材料草稿
 - **类别建议：** 生产力工具
-- **隐私说明：** [本地 0.5.0 说明](privacy.md)；公开版本仍使用 [0.4.0 隐私说明](https://github.com/Jerrywjr/scholar-hover/blob/v0.4.0/scholar-hover/docs/privacy.md)，未来发布时须同步更新公开说明
-- **公开问题反馈：** [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues)（请勿提交 API Key、登录信息或私人内容）
+- **隐私说明：** [0.5.0 说明](privacy.md)；[公开版本](https://github.com/Jerrywjr/scholarHover/blob/v0.5.0/scholar-hover/docs/privacy.md)
+- **公开问题反馈：** [GitHub Issues](https://github.com/Jerrywjr/scholarHover/issues)（请勿提交 API Key、登录信息或私人内容）
 
 ## 简短说明
 
@@ -16,7 +16,7 @@
 
 单一用途：在用户当前浏览的、已授权的 HTTPS 网页链接旁预览有来源的论文信息，辅助决定是否打开全文，包括 Google Scholar、Nature 和 arXiv。
 
-本地 0.5.0 支持简体中文、英文、法语和德语。界面语言和译文语言分别选择，后文中的生成内容使用用户选定的语言。多语言文本尚未完成母语使用者审核。
+0.5.0 支持简体中文、英文、法语和德语。界面语言和译文语言分别选择，后文中的生成内容使用用户选定的语言。多语言文本尚未完成母语使用者审核。
 
 知阅首次安装或首次从 0.4.x 升级后默认 OFF；之后重新加载或重启浏览器会保留开关状态。点击工具栏图标打开弹窗，切为 ON 时明确申请所有 HTTPS 网站的可选 `https://*/*` 权限，用于读取悬停链接文字及目标元数据。在支持网页悬停或聚焦链接 500 毫秒后出现卡片；已打开的支持页面无需刷新即可注入。`chrome://`、Chrome 应用商店、内置 PDF 阅读器和限制扩展访问的页面不支持。切为 OFF 停止新的悬停预览，已有收藏保留，已发起任务可能继续完成。
 

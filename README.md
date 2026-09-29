@@ -6,11 +6,11 @@ A Chrome extension that puts source-linked paper previews beside links on suppor
 
 **English** · [简体中文](README.zh-CN.md)
 
-[Download published v0.4.0](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) · [Setup guide](scholar-hover/README.md) · [Report a problem](https://github.com/Jerrywjr/scholar-hover/issues) · [MIT license](LICENSE)
+[Download published v0.5.0](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0) · [Setup guide](scholar-hover/README.md) · [Report a problem](https://github.com/Jerrywjr/scholarHover/issues) · [MIT license](LICENSE)
 
-**The local working version is 0.5.0, with an OFF-by-default toolbar switch and previews across supported HTTPS websites.** It has not been published to GitHub Releases or the Chrome Web Store. The download above remains the published 0.4.0; build this checkout or use the local 0.5.0 package to try the changes.
+**Version 0.5.0 is an experimental prerelease**, with an OFF-by-default toolbar switch and previews across supported HTTPS websites. Download it from GitHub Releases for manual installation; it is not published in the Chrome Web Store. [Release notes and known issues](scholar-hover/docs/release-notes-0.5.0.md).
 
-Local 0.5.0 passes **468 unit/DOM tests and 139 browser checks** with controlled fixtures. See the [0.5.0 test report](scholar-hover/docs/test-report-0.5.0.md) for evidence and limits. Browser fixtures pre-grant HTTPS access; Chrome’s native permission dialog remains a manual check.
+The release check reran **468 unit/DOM tests** successfully on 2026-09-29. The **139 controlled browser checks** ran on 2026-09-26 and were not repeated for this documentation-only publication update. See the [0.5.0 test report](scholar-hover/docs/test-report-0.5.0.md). Chrome’s native permission dialog and real-site coverage remain separate checks.
 
 ## The problem: screening papers interrupts the search
 
@@ -49,16 +49,16 @@ The manager keeps completion status separate from download status. A paper can b
 
 Requires **desktop Chrome 120 or later**. This release is loaded as an unpacked extension; it is not a Chrome Web Store listing.
 
-1. Download [scholar-hover-0.4.0.zip](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip) from the release and extract it into a permanent folder. A [SHA-256 checksum](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip.sha256) is included.
+1. Download [scholar-hover-0.5.0.zip](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip) from the release and extract it into a permanent folder. A [SHA-256 checksum](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip.sha256) is included.
 2. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted folder containing `manifest.json`.
-3. In local 0.5.0, open the toolbar popup and choose **Settings**; the published 0.4.0 icon opens settings directly. Choose your interface and output languages, enter your model provider's HTTPS base URL, model name and API key, then review the data-sharing notice and save.
-4. For local 0.5.0, return to the toolbar popup, turn **ON** and grant optional access to all HTTPS websites. Hover over or focus a link for 500 ms; supported already-open pages receive the preview script without a refresh. The published 0.4.0 download retains its Scholar-only workflow.
+3. Open the toolbar popup and choose **Settings**. Choose your interface and output languages, enter your model provider's HTTPS base URL, model name and API key, then review the data-sharing notice and save.
+4. Return to the toolbar popup, turn **ON** and grant optional access to all HTTPS websites. Hover over or focus a link for 500 ms; supported already-open pages receive the preview script without a refresh.
 
 **Bring your own model API key.** Generation uses non-streaming Chat Completions requests; compatibility depends on the provider. For a base URL such as `https://api.example.com/v1`, the extension appends `/chat/completions`. No Scholar Hover account or project-operated backend is required. Metadata previews work without a model key; translations need configuration and consent. Provider charges may apply.
 
-When upgrading, replace the files in the **same extension folder**, reload the extension; in local 0.5.0, enable the toolbar switch again. Refresh Scholar for the published 0.4.0. Avoid uninstalling or loading a different directory if you want to retain the original extension's local data. See the [detailed English guide](scholar-hover/README.md) or [中文配置说明](scholar-hover/README.zh-CN.md).
+When upgrading, replace the files in the **same extension folder**, reload the extension and enable the toolbar switch when upgrading from 0.4.x. Refresh an old page if it still shows the previous panel. Avoid uninstalling or loading a different directory if you want to retain the original extension's local data. See the [detailed English guide](scholar-hover/README.md) or [中文配置说明](scholar-hover/README.zh-CN.md).
 
-Local 0.5.0 starts **OFF** on first installation or when first upgrading from 0.4.x. Later reloads and browser restarts retain your switch setting. Enabling in the toolbar popup requests optional `https://*/*` access to all HTTPS websites, allowing hovered-link text and destination metadata to be read. OFF stops new hover previews, keeps saved content and may leave already-requested jobs running. Browser-internal pages such as `chrome://`, the Chrome Web Store, native PDF viewers and pages restricting extensions are unsupported.
+Version 0.5.0 starts **OFF** on first installation or when first upgrading from 0.4.x. Later reloads and browser restarts retain your switch setting. Enabling in the toolbar popup requests optional `https://*/*` access to all HTTPS websites, allowing hovered-link text and destination metadata to be read. OFF stops new hover previews, keeps saved content and may leave already-requested jobs running. Browser-internal pages such as `chrome://`, the Chrome Web Store, native PDF viewers and pages restricting extensions are unsupported.
 
 ## Languages, data and control
 
@@ -71,23 +71,25 @@ Local 0.5.0 starts **OFF** on first installation or when first upgrading from 0.
 
 A missing abstract or old metadata HTTP 429 needs **Read abstract again**, which retries retrieval; **Retry generation** retries the model using the text already retrieved. Eligible old previews without an abstract are refreshed through the new path when reopened. Complete cached abstracts and compatible paid translations remain reusable. Source-page requests omit cookies and credentials; HTML is parsed locally without running page scripts or following redirects. This does not extract text from arbitrary PDFs or sign into publisher sites.
 
+**Known unresolved issue:** readable articles can still fail background extraction. The “sign-in or verification” message also covers unrecognized metadata and identity mismatches; it does not prove a CAPTCHA. A subsequent OpenAlex HTTP 429 is a separate rate/quota failure. This release does not fix these reported failures or read already-open authenticated pages. [Details](scholar-hover/docs/release-notes-0.5.0.md).
+
 ## What to expect from this release
 
-**The published v0.4.0 and local v0.5.0 are experimental.** The public download supports Scholar results; local 0.5.0 supports links on permitted HTTPS websites but cannot guarantee metadata or abstracts for every site. Nature and arXiv parsing support is not evidence of broad publisher coverage. Model translations can be wrong. Check important numbers, negation and conclusions against the original text.
+**Version 0.5.0 is experimental.** It supports links on permitted HTTPS websites but cannot guarantee metadata or abstracts for every site. Nature and arXiv parsing support is not evidence of broad publisher coverage. Check important numbers, negation and conclusions against the original text.
 
 PDF downloads depend on accessible source links. Login pages, missing PDFs and interrupted downloads are reported; you complete institutional authentication or CAPTCHA yourself. The extension does not bypass access controls. APA-style references use available metadata and omit missing fields; review them before formal citation.
 
 There is no journal impact factor, PDF analysis, reference-library synchronization or automatic Scholar crawling. The project focuses on the decision before full-text reading.
 
-The local 0.5.0 checks cover cross-site previews, switching, persistent translations, immediate saving, restart recovery, request deduplication and ordered exports. They do not establish faster screening, real-world matching accuracy or translation quality. See the [current verification report](scholar-hover/docs/test-report-0.5.0.md), [historical v0.4.0 report](scholar-hover/docs/test-report-0.4.0.md) and [human evaluation plan](scholar-hover/evaluation/README.md).
+The 0.5.0 checks cover cross-site previews, switching, persistent translations, immediate saving, restart recovery, request deduplication and ordered exports. They do not establish faster screening, real-world matching accuracy or translation quality. See the [current verification report](scholar-hover/docs/test-report-0.5.0.md), [historical v0.4.0 report](scholar-hover/docs/test-report-0.4.0.md) and [human evaluation plan](scholar-hover/evaluation/README.md).
 
 ## Develop and contribute
 
 The extension is TypeScript + Vite + Chrome Manifest V3. Content scripts render the preview in a Shadow DOM; the background resolves papers and coordinates local storage; an extension-owned worker handles model requests. All source lives in `scholar-hover/`.
 
 ```sh
-git clone https://github.com/Jerrywjr/scholar-hover.git
-cd scholar-hover/scholar-hover
+git clone https://github.com/Jerrywjr/scholarHover.git
+cd scholarHover/scholar-hover
 npm ci
 npm test
 npm run test:corpus
@@ -102,6 +104,6 @@ npm run test:e2e
 npm run package
 ```
 
-Use Node.js 22. Tests need no real model key. Hosted GitHub Actions is not enabled in this initial publication; a [workflow example and setup instructions](docs/ci/README.md) are included. For bugs, include the extension version, reproduction steps and expected behavior in [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues)—never API keys or private paper content. Reproducible matching failures, accessibility feedback and language reviews are especially useful. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Use Node.js 22. Tests need no real model key. Hosted GitHub Actions is not enabled in this initial publication; a [workflow example and setup instructions](docs/ci/README.md) are included. For bugs, include the extension version, reproduction steps and expected behavior in [GitHub Issues](https://github.com/Jerrywjr/scholarHover/issues)—never API keys or private paper content. Reproducible matching failures, accessibility feedback and language reviews are especially useful. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Code is licensed under [MIT](LICENSE). Third-party data and services retain their own terms. Scholar Hover is an independent project, unaffiliated with Google Scholar, OpenAlex or model providers.

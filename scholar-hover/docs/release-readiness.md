@@ -1,6 +1,6 @@
 # Release status and remaining checks
 
-Version **0.4.0** is an open-source experimental release at [Jerrywjr/scholar-hover](https://github.com/Jerrywjr/scholar-hover), under the [MIT license](../../LICENSE). Installable artifacts belong to the [v0.4.0 GitHub release](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0). Bugs and feature requests can be reported through [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues); reports are public and must not include credentials or private content.
+Version **0.5.0** is an open-source experimental prerelease at [Jerrywjr/scholarHover](https://github.com/Jerrywjr/scholarHover), under the [MIT license](../../LICENSE). Installable artifacts belong to the [v0.5.0 GitHub release](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0). Bugs and feature requests can be reported through [GitHub Issues](https://github.com/Jerrywjr/scholarHover/issues); reports are public and must not include credentials or private content.
 
 The GitHub release is for manual installation and feedback. The extension has not been submitted to or published in the Chrome Web Store, and open-source publication does not certify matching accuracy, translation quality or screening efficiency.
 
@@ -8,7 +8,7 @@ The GitHub release is for manual installation and feedback. The extension has no
 
 The repository contains source, English and Chinese documentation, the license, tests, evaluation scaffolding and an inactive CI example. The extension source lives in `scholar-hover/`. The release ZIP must be built from its matching source tag, with its SHA-256 checksum attached alongside it. Credentials, browser profiles, generated build directories and local test diagnostics are excluded from source control. A release ZIP is an unpacked extension, not a signed store package.
 
-The [0.4.0 test report](test-report-0.4.0.md) records the local automated checks and their limitations. Reproduction commands are in the [development guide](../README.md#development-and-reproducible-checks). Hosted GitHub Actions is not enabled because the initial publishing credentials lack workflow-writing permission. An authorized maintainer can enable the [workflow example](../../docs/ci/README.md); it performs checks only and contains no automatic release or store-deployment step.
+The [0.5.0 test report](test-report-0.5.0.md) records the local automated checks and their limitations. Reproduction commands are in the [development guide](../README.md#development-and-reproducible-checks). Hosted GitHub Actions is not enabled because the initial publishing credentials lack workflow-writing permission. An authorized maintainer can enable the [workflow example](../../docs/ci/README.md); it performs checks only and contains no automatic release or store-deployment step.
 
 ## Remaining evaluation
 

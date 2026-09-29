@@ -6,11 +6,11 @@
 
 [English](README.md) · **简体中文**
 
-[下载已发布的 v0.4.0](https://github.com/Jerrywjr/scholar-hover/releases/tag/v0.4.0) · [详细配置说明](scholar-hover/README.zh-CN.md) · [反馈问题](https://github.com/Jerrywjr/scholar-hover/issues) · [MIT 开源许可](LICENSE)
+[下载已发布的 v0.5.0](https://github.com/Jerrywjr/scholarHover/releases/tag/v0.5.0) · [详细配置说明](scholar-hover/README.zh-CN.md) · [反馈问题](https://github.com/Jerrywjr/scholarHover/issues) · [MIT 开源许可](LICENSE)
 
-**本机工作版本为 0.5.0，增加默认关闭的工具栏开关与支持的 HTTPS 网页链接预览。** 尚未发布到 GitHub Releases 或 Chrome Web Store；上方下载仍为已发布的 0.4.0。试用请使用本地 0.5.0 安装包，或从当前代码构建。
+**0.5.0 为开源试验版（预发布）**，增加默认关闭的工具栏开关与支持的 HTTPS 网页链接预览。从 GitHub Releases 下载后手动安装，尚未上架 Chrome Web Store。[更新说明与已知问题](scholar-hover/docs/release-notes-0.5.0.md)。
 
-本地 0.5.0 使用受控测试数据通过 **468 项单元／页面测试和 139 项浏览器检查**。证据与限制见[0.5.0 测试报告](scholar-hover/docs/test-report-0.5.0.md)。浏览器夹具预先授予 HTTPS 权限，真实 Chrome 权限对话框仍需手工检查。
+2026-09-29 发布检查重新通过 **468 项单元／页面测试**；**139 项受控浏览器检查**完成于 2026-09-26，本次仅更新发布文档，未重跑浏览器检查。证据与限制见[测试报告](scholar-hover/docs/test-report-0.5.0.md)。真实 Chrome 权限对话框与真实网站覆盖仍需单独验证。
 
 ## 要解决的问题：筛选文献总在打断检索
 
@@ -49,16 +49,16 @@
 
 需要 **桌面 Chrome 120 或更新版本**。当前通过“加载已解压的扩展程序”安装，尚未上架 Chrome 应用商店。
 
-1. 下载 [scholar-hover-0.4.0.zip](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip)，解压到固定目录。发布页另附 [SHA-256 校验文件](https://github.com/Jerrywjr/scholar-hover/releases/download/v0.4.0/scholar-hover-0.4.0.zip.sha256)。
+1. 下载 [scholar-hover-0.5.0.zip](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip)，解压到固定目录。发布页另附 [SHA-256 校验文件](https://github.com/Jerrywjr/scholarHover/releases/download/v0.5.0/scholar-hover-0.5.0.zip.sha256)。
 2. 打开 `chrome://extensions`，启用“开发者模式”，选择“加载已解压的扩展程序”，选中含 `manifest.json` 的解压目录。
-3. 本地 0.5.0 点击扩展图标打开工具栏弹窗再选择“设置”；公开 0.4.0 图标直接打开设置。选择界面和生成内容的语言，填写模型服务的 HTTPS 基地址、模型名与 API Key，阅读数据外发说明后保存。
-4. 本地 0.5.0 在工具栏弹窗切为 ON，并授予所有 HTTPS 网站访问权限后，悬停或聚焦链接 500 毫秒。支持的已打开页面无需刷新即可注入预览；公开下载的 0.4.0 仍按 Scholar 专用流程使用。
+3. 点击扩展图标打开工具栏弹窗再选择“设置”。选择界面和生成内容的语言，填写模型服务的 HTTPS 基地址、模型名与 API Key，阅读数据外发说明后保存。
+4. 在工具栏弹窗切为 ON，并授予所有 HTTPS 网站访问权限后，悬停或聚焦链接 500 毫秒。支持的已打开页面无需刷新即可注入预览。
 
 **模型 API Key 由你提供。** 首版使用非流式 Chat Completions 接口，兼容性取决于服务商。地址如 `https://api.example.com/v1`，插件会追加 `/chat/completions`。无需知阅账号或项目方服务器；没有模型 Key 也能预览元数据，翻译则需要配置并同意外发，服务商可能计费。
 
-升级请覆盖**原来加载目录**中的文件，重新加载扩展；本地 0.5.0 在弹窗重新开启，公开 0.4.0 则刷新 Scholar。为保留原扩展实例的本机数据，请避免卸载重装或换目录加载。更多细节见 [中文使用说明](scholar-hover/README.zh-CN.md) 或 [English setup guide](scholar-hover/README.md)。
+升级请覆盖**原来加载目录**中的文件，重新加载扩展；从 0.4.x 升级后在弹窗开启开关。旧网页仍显示旧面板时刷新一次。为保留原扩展实例的本机数据，请避免卸载重装或换目录加载。更多细节见 [中文使用说明](scholar-hover/README.zh-CN.md) 或 [English setup guide](scholar-hover/README.md)。
 
-本地 0.5.0 首次安装或首次从 0.4.x 升级后默认 OFF；之后重新加载或重启浏览器会保留开关状态。开启时申请可选 `https://*/*` 权限，允许读取所有 HTTPS 网页中悬停链接的文字及目标论文元数据。OFF 停止新的悬停预览，已有收藏保留，已发起任务可能继续完成。`chrome://`、Chrome 应用商店、内置 PDF 阅读器和限制扩展访问的页面不支持。
+0.5.0 首次安装或首次从 0.4.x 升级后默认 OFF；之后重新加载或重启浏览器会保留开关状态。开启时申请可选 `https://*/*` 权限，允许读取所有 HTTPS 网页中悬停链接的文字及目标论文元数据。OFF 停止新的悬停预览，已有收藏保留，已发起任务可能继续完成。`chrome://`、Chrome 应用商店、内置 PDF 阅读器和限制扩展访问的页面不支持。
 
 ## 语言、来源与控制
 
@@ -71,23 +71,25 @@
 
 缺摘要或旧“元数据 HTTP 429”应使用“重新读取摘要”重试来源查询；“重试生成”只对已取得文本重试模型。符合条件的旧缺摘要预览再次打开时会尝试新读取流程，完整摘要及配置一致的已有付费译文继续复用。原文网页请求不携带 Cookie 或凭据，HTML 在本机解析，不执行网页脚本或跟随跳转；不提取任意 PDF 正文，也不自动登录出版社。
 
+**已知未解决问题：** 正常可读的论文仍可能提取失败。“可能需要登录或验证”也用于未识别元数据或身份校验不一致，不能据此判断存在验证码；随后出现的 OpenAlex HTTP 429 是独立的限流或额度问题。本次发布尚未修复这些实际反馈，也未实现读取用户已打开且完成登录的页面。详见[更新说明](scholar-hover/docs/release-notes-0.5.0.md)。
+
 ## 当前版本的边界
 
-**已发布的 v0.4.0 和本地 v0.5.0 均为试验版本。** 公开下载仅支持 Scholar 结果，本地 0.5.0 支持已授权 HTTPS 网页的链接，但不保证每个网站都有论文元数据或摘要。Nature、arXiv 的解析支持不能证明覆盖所有出版社。模型译文可能出错，重要数字、否定词和结论强度请对照原文核验。
+**0.5.0 为试验版本。** 支持已授权 HTTPS 网页的链接，但不保证每个网站都有可提取的论文元数据或摘要。Nature、arXiv 的解析支持不能证明覆盖所有出版社。重要数字、否定词和结论强度请对照原文核验。
 
 原文下载取决于可访问的来源链接。缺少 PDF、返回登录页或下载中断时会提示；机构认证和验证码由用户自行完成，插件不绕过访问控制。APA 风格引用仅使用已有元数据，缺失字段不补造，正式引用前请检查。
 
 本项目暂不提供期刊影响因子、PDF 精读、文献库同步或自动抓取 Scholar，重点是打开全文之前的筛选。
 
-本地 0.5.0 检查覆盖跨网站预览、开关、持久译文、立即保存、重启恢复、请求去重和按序导出，不证明筛选更快、真实匹配准确或翻译可靠。详见 [当前验证报告](scholar-hover/docs/test-report-0.5.0.md)、[历史 v0.4.0 报告](scholar-hover/docs/test-report-0.4.0.md) 与 [人工评估方案](scholar-hover/evaluation/README.md)。
+0.5.0 检查覆盖跨网站预览、开关、持久译文、立即保存、重启恢复、请求去重和按序导出，不证明筛选更快、真实匹配准确或翻译可靠。详见 [当前验证报告](scholar-hover/docs/test-report-0.5.0.md)、[历史 v0.4.0 报告](scholar-hover/docs/test-report-0.4.0.md) 与 [人工评估方案](scholar-hover/evaluation/README.md)。
 
 ## 开发与贡献
 
 技术栈为 TypeScript、Vite、Chrome Manifest V3。页面脚本用 Shadow DOM 显示预览；后台负责匹配、存储与任务协调；扩展自己的 Worker 执行模型请求。源码位于 `scholar-hover/`。
 
 ```sh
-git clone https://github.com/Jerrywjr/scholar-hover.git
-cd scholar-hover/scholar-hover
+git clone https://github.com/Jerrywjr/scholarHover.git
+cd scholarHover/scholar-hover
 npm ci
 npm test
 npm run test:corpus
@@ -102,6 +104,6 @@ npm run test:e2e
 npm run package
 ```
 
-测试不需要真实模型 Key。首次公开版尚未启用 GitHub Actions 云端测试；仓库提供[工作流示例与启用说明](docs/ci/README.md)。欢迎在 [GitHub Issues](https://github.com/Jerrywjr/scholar-hover/issues) 提供扩展版本、复现步骤与预期行为，尤其是可复现的匹配错误、无障碍问题和语言反馈；请勿提交 API Key 或私有论文内容。参与方法见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+测试不需要真实模型 Key。首次公开版尚未启用 GitHub Actions 云端测试；仓库提供[工作流示例与启用说明](docs/ci/README.md)。欢迎在 [GitHub Issues](https://github.com/Jerrywjr/scholarHover/issues) 提供扩展版本、复现步骤与预期行为，尤其是可复现的匹配错误、无障碍问题和语言反馈；请勿提交 API Key 或私有论文内容。参与方法见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 代码采用 [MIT 许可](LICENSE)，第三方数据和服务保留各自条款。知阅是独立项目，与 Google Scholar、OpenAlex 或模型服务商没有隶属关系。
